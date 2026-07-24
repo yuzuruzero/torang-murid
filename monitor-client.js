@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 /**
- * Torang Class Monitor — guest client (v3.4 · main "kerja sendiri" kedeteksi)
+ * Torang Class Monitor — guest client (v3.6 · nama murid = username Ubuntu)
+ * ================================================================
+ * BARU v3.6:
+ *   • Awalan nama guest murid kini pakai USERNAME Ubuntu (lebih enak dibaca),
+ *     bukan nama device. Kalau username tak ada / 'root' -> fallback nama device.
+ *     Override tetap bisa via TORANG_LABEL / config.label.
+ * ================================================================
+ * FIX v3.5 (bug "main selesai menemani tim malah balik ke Ruang Tamu"):
+ *   • Main yang SUDAH pernah kerja, saat selesai & nganggur kini ke STANDBY
+ *     (samain dgn worker), bukan Ruang Tamu. Ruang Tamu tetap hanya utk yg BELUM
+ *     pernah kerja (baru lahir). Main melacak `hasWorked` seperti worker.
  * ================================================================
  * FIX v3.4 (main sibuk karena KERJA SENDIRI, mis. mereview hasil agent lain):
  *   • Deteksi "sibuk" tak lagi kalah oleh mtime file sesi yang BASI — kini ambil tanda
@@ -102,6 +112,14 @@ try { fs.mkdirSync(CONFIG_DIR, { recursive: true }); } catch (_) {}
 function readJsonSafe(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return {}; } }
 const FILECFG = readJsonSafe(CONFIG_FILE);
 
+// [TORANG] v3.6: awalan nama murid = USERNAME Ubuntu (lebih enak dibaca);
+// kalau username tak ada / 'root' -> pakai nama device (hostname).
+function soLabelDefault() {
+  try { const u = os.userInfo().username; if (u && u !== 'root') return u; } catch (_) {}
+  const e = process.env.USER || process.env.USERNAME || '';
+  return (e && e !== 'root') ? e : os.hostname();
+}
+
 const CONFIG = {
   OFFICE_URL: process.env.TORANG_OFFICE_URL || FILECFG.officeUrl || '<<OFFICE_URL>>',
   JOIN_KEY:   process.env.TORANG_JOIN_KEY   || FILECFG.joinKey   || '<<JOIN_KEY>>',
@@ -123,9 +141,10 @@ const CONFIG = {
   DEBUG: process.env.TORANG_DEBUG === '1' || !!FILECFG.debug,
   TARGET: process.env.TORANG_TARGET || FILECFG.target || 'torang',  // 'torang' (mock/kontrak kita) | 'star-office'
   SO_ROLE: (process.env.TORANG_SO_ROLE || FILECFG.soRole || 'teacher').toLowerCase(), // 'teacher' | 'student'
-  // Awalan nama guest (pembeda tim antar-PC). Default: murid pakai nama komputer; guru kosong.
+  // Awalan nama guest (pembeda tim antar-PC). Default: murid pakai USERNAME Ubuntu
+  // (fallback ke nama device kalau username tak ada); guru kosong.
   LABEL: (process.env.TORANG_LABEL != null ? process.env.TORANG_LABEL : (FILECFG.label != null ? FILECFG.label :
-           ((process.env.TORANG_SO_ROLE || FILECFG.soRole || 'teacher').toLowerCase() === 'student' ? os.hostname() : ''))),
+           ((process.env.TORANG_SO_ROLE || FILECFG.soRole || 'teacher').toLowerCase() === 'student' ? soLabelDefault() : ''))),
   GUEST_LINGER_MS: Number(process.env.TORANG_GUEST_LINGER_MS || FILECFG.guestLingerMs || 30000), // tahan guest ~30s: sub-agent cepat tetap terlihat (mis. di Standby setelah selesai)
   MAIN_BUSY_MS: Number(process.env.TORANG_MAIN_BUSY_MS || FILECFG.mainBusyMs || 40000), // main/worker "sibuk" bila file sesi berubah dalam N ms terakhir (dilebarkan v3.3: denyut singkat tertangkap)
   WORK_LINGER_MS: Number(process.env.TORANG_WORK_LINGER_MS || FILECFG.workLingerMs || 25000), // v3.3: sekali kerja, tahan di ruangnya N ms walau deteksi sela kosong (kerja OpenClaw berdenyut)
@@ -416,12 +435,15 @@ async function tickWorkers(includeMain) {
     const busyNow = cachedMainBusy || teamBusy;
     const lastBusy = (g0 && g0.lastBusyAt) || 0;
     const lingerBusy = busyNow || (now - lastBusy < CONFIG.WORK_LINGER_MS);
-    const room = lingerBusy ? (teamRoom || 'tamu') : 'tamu';
+    // [TORANG] v3.5: main yang PERNAH kerja -> STANDBY saat selesai (samain dgn worker),
+    // bukan Ruang Tamu. Tamu tetap hanya utk main yg belum pernah kerja (baru lahir).
+    const hadWorked = (g0 && g0.hasWorked) || busyNow;
+    const room = lingerBusy ? (teamRoom || 'tamu') : (hadWorked ? 'standby' : 'tamu');
     const detail = busyNow ? (teamRoom ? `mengawasi: ${teamRoom}` : 'sedang bekerja')
-      : (lingerBusy ? 'menyelesaikan…' : 'menunggu perintah');
+      : (lingerBusy ? 'menyelesaikan…' : (hadWorked ? 'menunggu tugas' : 'menunggu perintah'));
     const g = await pushGuest(desiredIds, now, key, label(m.name), room,
       lingerBusy ? 'executing' : 'idle', detail);
-    if (busyNow) g.lastBusyAt = now;
+    if (busyNow) { g.hasWorked = true; g.lastBusyAt = now; }
   }
 
   for (const [id, g] of guests) {
