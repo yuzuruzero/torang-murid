@@ -1,6 +1,26 @@
 #!/usr/bin/env node
 /**
- * Torang Class Monitor — guest client (v3.6 · nama murid = username Ubuntu)
+ * Torang Class Monitor — guest client (v3.8 · routing by-aktivitas: main KELUAR Ruang Tamu)
+ * ================================================================
+ * BARU v3.8 (Cara A — main/worker pindah ruang sesuai APA yang dikerjakan):
+ *   • Baca `openclaw audit --kind tool_action --json` (metadata-only): tahu tiap agent
+ *     lagi pakai tool apa (bukan isinya) -> petakan ke ruang.
+ *       cari/internet (web_search, web_fetch) -> WEB
+ *       olah/baca (memory_search, sessions_history, read, grep, …) -> DATA
+ *       hasilkan/kirim (apply_patch, sessions_send, …) -> CS
+ *   • Main yang KERJA SENDIRI kini PINDAH ke ruang aktivitasnya (keluar Ruang Tamu),
+ *     bukan lagi "kerja di dalam Ruang Tamu".
+ *   • Tak butuh plugin / restart Gateway. Kalau `openclaw audit` tak ada -> degrade
+ *     ke perilaku lama (aman). Peta tool->ruang bisa dioverride via config `toolRoom`.
+ *   • DEBUG `activity` cetak {agent, room, tool, umur} + daftar tool "belum_dipetakan".
+ * ================================================================
+ * FIX v3.7 (bug "main kerja SENDIRI tetap tak gerak walau v3.4"):
+ *   • Deteksi "main sibuk" tak lagi hardcode id 'main'. Id main asli diambil dari
+ *     agents list (isDefault) -> `cachedMainBusy = set.has(idMainAsli)`. Dulu kalau
+ *     id main bukan 'main', solo-work tak terdeteksi (delegasi tetap jalan via teamBusy).
+ *   • DEBUG `busy` kini cetak {mainId, mainBusy} biar gampang dicek.
+ *   • CATATAN: ini bikin main solo TERDETEKSI kerja (animasi kerja di Ruang Tamu).
+ *     Untuk main PINDAH ke ruang sesuai aktivitas (Web/Data/CS) butuh plugin aktivitas.
  * ================================================================
  * BARU v3.6:
  *   • Awalan nama guest murid kini pakai USERNAME Ubuntu (lebih enak dibaca),
@@ -148,6 +168,8 @@ const CONFIG = {
   GUEST_LINGER_MS: Number(process.env.TORANG_GUEST_LINGER_MS || FILECFG.guestLingerMs || 30000), // tahan guest ~30s: sub-agent cepat tetap terlihat (mis. di Standby setelah selesai)
   MAIN_BUSY_MS: Number(process.env.TORANG_MAIN_BUSY_MS || FILECFG.mainBusyMs || 40000), // main/worker "sibuk" bila file sesi berubah dalam N ms terakhir (dilebarkan v3.3: denyut singkat tertangkap)
   WORK_LINGER_MS: Number(process.env.TORANG_WORK_LINGER_MS || FILECFG.workLingerMs || 25000), // v3.3: sekali kerja, tahan di ruangnya N ms walau deteksi sela kosong (kerja OpenClaw berdenyut)
+  POLL_ACTIVITY: process.env.TORANG_POLL_ACTIVITY !== '0' && FILECFG.pollActivity !== false, // v3.8: baca `openclaw audit` -> ruang dari aktivitas tool (Cara A)
+  ACTIVITY_LINGER_MS: Number(process.env.TORANG_ACTIVITY_LINGER_MS || FILECFG.activityLingerMs || 25000), // tahan di ruang aktivitas N ms setelah tool terakhir
 };
 const base = () => CONFIG.OFFICE_URL.replace(/\/+$/, '');
 function dbg(m, x) { if (CONFIG.DEBUG) console.log(`[torang-monitor] ${m}` + (x ? ' ' + safe(x) : '')); }
@@ -324,10 +346,58 @@ async function refreshBusy() {
       if (CONFIG.DEBUG) seen.push({ a: aid, st: st || '-', umur: isFinite(ago) ? Math.round(ago / 1000) + 's' : '∞', sibuk: isBusy ? 1 : 0 });
     }
     busyAgents = set;
-    cachedMainBusy = set.has('main');
-    dbg('busy', { aktif: [...set], sesi: seen });
+    // [TORANG] v3.7: JANGAN hardcode 'main' — id main sebenarnya dari agents list (isDefault),
+    // bisa beda dari 'main'. Kalau salah id -> main kerja-sendiri tak terdeteksi sibuk.
+    const _m = mainAgent();
+    const _mid = (_m && _m.id) ? String(_m.id).toLowerCase() : 'main';
+    cachedMainBusy = set.has(_mid) || set.has('main');
+    dbg('busy', { mainId: _mid, mainBusy: cachedMainBusy, aktif: [...set], sesi: seen });
   } catch (e) { dbg('sessions gagal', { err: e.message }); }
   finally { mainInFlight = false; }
+}
+
+/* [TORANG] v3.8 — ROUTING BERDASAR AKTIVITAS (Cara A). Baca `openclaw audit` (metadata-only):
+ *   tahu tiap agent LAGI PAKAI TOOL apa (bukan isinya) -> petakan ke ruang.
+ *   cari (internet) -> WEB ; olah/baca -> DATA ; hasilkan/kirim -> CS ; lain -> null (jangan pindah). */
+const TOOL_ROOM = Object.assign({
+  // WEB — cari dari internet
+  web_search: 'web', web_fetch: 'web', browser: 'web', navigate: 'web', fetch_url: 'web', http_request: 'web',
+  // DATA — baca / cari / olah info
+  memory_search: 'data', sessions_list: 'data', sessions_history: 'data',
+  read: 'data', file_read: 'data', read_file: 'data', grep: 'data', glob: 'data', list_dir: 'data',
+  // CS — hasilkan / kirim (produksi & komunikasi)
+  apply_patch: 'cs', write: 'cs', edit: 'cs', write_file: 'cs', sessions_send: 'cs', message_send: 'cs',
+}, FILECFG.toolRoom || {});
+function toolRoom(t) { return TOOL_ROOM[String(t || '').toLowerCase()] || null; }
+
+let toolActivity = new Map(); // agentId(lower) -> { room, ts, tool }
+let actInFlight = false;
+const _unmappedTools = new Set();
+async function refreshToolActivity() {
+  if (CONFIG.SIMULATE_SUBAGENT || !CONFIG.POLL_ACTIVITY || actInFlight) return;
+  actInFlight = true;
+  try {
+    const raw = parseCliJson(await ocCliAsync(['audit', '--kind', 'tool_action', '--limit', '80', '--json']));
+    const events = Array.isArray(raw) ? raw : (raw && raw.events) || [];
+    const now = Date.now();
+    // proses dari TERLAMA -> TERBARU supaya event terbaru per-agent yang menang
+    events.slice().sort((a, b) => (Number(a.occurredAt) || 0) - (Number(b.occurredAt) || 0)).forEach((e) => {
+      const aid = String(e.agentId || '').toLowerCase(); if (!aid) return;
+      const r = toolRoom(e.toolName);
+      if (!r) { if (CONFIG.DEBUG && e.toolName) _unmappedTools.add(e.toolName); return; }
+      toolActivity.set(aid, { room: r, ts: Number(e.occurredAt) || now, tool: e.toolName });
+    });
+    if (CONFIG.DEBUG) dbg('activity', {
+      agents: [...toolActivity.entries()].map(([a, v]) => ({ a, room: v.room, tool: v.tool, umur: Math.round((now - v.ts) / 1000) + 's' })),
+      belum_dipetakan: [..._unmappedTools],
+    });
+  } catch (e) { dbg('audit gagal (routing aktivitas dilewati)', { err: e.message }); }
+  finally { actInFlight = false; }
+}
+function activityRoom(id) {
+  const v = toolActivity.get(String(id).toLowerCase());
+  if (!v) return null;
+  return (Date.now() - v.ts <= CONFIG.ACTIVITY_LINGER_MS) ? v.room : null;
 }
 
 /* [TORANG] v2.9 — WORKER AGENT = penghuni tetap (bukan per-task).
@@ -407,22 +477,24 @@ async function tickWorkers(includeMain) {
   let teamBusy = rr.size > 0 || taskRunning; // tim kerja bila ada task jalan / ruang aktif
 
   for (const w of workers()) {
-    // "kerja SEKARANG" = sesi agent ini baru berubah (dipanggil langsung) ATAU ada tugas yg cocok ruangnya.
-    const busyNow = agentBusy(w.id) || (w.room && rr.has(w.room));
+    // "kerja SEKARANG" = sesi agent berubah / ada task cocok ruangnya / lagi pakai tool (audit).
+    const actRoomW = activityRoom(w.id);               // [TORANG] v3.8 ruang dari aktivitas tool (Cara A)
+    const roomActive = actRoomW || w.room;             // aktivitas dulu, baru peran
+    const busyNow = agentBusy(w.id) || (w.room && rr.has(w.room)) || !!actRoomW;
     const key = 'agent:' + w.id;
     const g0 = guests.get(key);
-    if (busyNow) { teamBusy = true; if (w.room) teamRoom = teamRoom || w.room; }
+    if (busyNow) { teamBusy = true; if (roomActive) teamRoom = teamRoom || roomActive; }
     // JEDA-KERJA: sekali kerja, anggap masih "di ruangnya" selama WORK_LINGER_MS (kerja OpenClaw berdenyut).
     const lastBusy = (g0 && g0.lastBusyAt) || 0;
     const lingerBusy = busyNow || (now - lastBusy < CONFIG.WORK_LINGER_MS);
-    const inRoom = lingerBusy && !!w.room;   // pindah ke ruang kerja hanya kalau punya ruang
+    const inRoom = lingerBusy && !!roomActive;   // pindah ke ruang kerja hanya kalau punya ruang
     const hadWorked = (g0 && g0.hasWorked) || busyNow;
     // belum pernah kerja -> RUANG TAMU ; pernah & nganggur -> STANDBY ; kerja/menyelesaikan -> ruangnya.
-    const room = inRoom ? w.room : (hadWorked ? 'standby' : 'tamu');
-    const detail = busyNow ? (w.room ? `kerja: ${w.room}` : 'bekerja')
+    const room = inRoom ? roomActive : (hadWorked ? 'standby' : 'tamu');
+    const detail = busyNow ? (roomActive ? `kerja: ${roomActive}` : 'bekerja')
       : (lingerBusy ? 'menyelesaikan…' : (hadWorked ? 'menunggu tugas' : 'baru masuk'));
     const g = await pushGuest(desiredIds, now, key, label(w.name), room,
-      lingerBusy ? (ROOM_STATE[w.room] || 'executing') : 'idle', detail);
+      lingerBusy ? (ROOM_STATE[roomActive] || 'executing') : 'idle', detail);
     if (busyNow) { g.hasWorked = true; g.lastBusyAt = now; }
   }
 
@@ -432,17 +504,20 @@ async function tickWorkers(includeMain) {
     const g0 = guests.get(key);
     // [TORANG] main = orkestrator: SIBUK bila sesinya sendiri aktif ATAU tim-nya sedang kerja.
     // Saat sibuk ia IKUT ke ruang kerja aktif (mengawasi tim); tanpa ruang spesifik -> Ruang Tamu (mejanya).
-    const busyNow = cachedMainBusy || teamBusy;
+    // [TORANG] v3.8: main punya ruang SENDIRI dari aktivitas tool (Cara A) -> keluar Ruang Tamu.
+    const actRoom = activityRoom(m.id);
+    const busyNow = cachedMainBusy || teamBusy || !!actRoom;
     const lastBusy = (g0 && g0.lastBusyAt) || 0;
     const lingerBusy = busyNow || (now - lastBusy < CONFIG.WORK_LINGER_MS);
-    // [TORANG] v3.5: main yang PERNAH kerja -> STANDBY saat selesai (samain dgn worker),
-    // bukan Ruang Tamu. Tamu tetap hanya utk main yg belum pernah kerja (baru lahir).
+    // v3.5: main yang PERNAH kerja -> STANDBY saat selesai; Ruang Tamu hanya utk yg belum pernah kerja.
     const hadWorked = (g0 && g0.hasWorked) || busyNow;
-    const room = lingerBusy ? (teamRoom || 'tamu') : (hadWorked ? 'standby' : 'tamu');
-    const detail = busyNow ? (teamRoom ? `mengawasi: ${teamRoom}` : 'sedang bekerja')
+    // prioritas ruang: aktivitas main sendiri -> ikut ruang tim (mengawasi) -> Ruang Tamu.
+    const mroom = actRoom || teamRoom;
+    const room = lingerBusy ? (mroom || 'tamu') : (hadWorked ? 'standby' : 'tamu');
+    const detail = busyNow ? (actRoom ? `kerja: ${actRoom}` : (teamRoom ? `mengawasi: ${teamRoom}` : 'sedang bekerja'))
       : (lingerBusy ? 'menyelesaikan…' : (hadWorked ? 'menunggu tugas' : 'menunggu perintah'));
     const g = await pushGuest(desiredIds, now, key, label(m.name), room,
-      lingerBusy ? 'executing' : 'idle', detail);
+      lingerBusy ? (ROOM_STATE[mroom] || 'executing') : 'idle', detail);
     if (busyNow) { g.hasWorked = true; g.lastBusyAt = now; }
   }
 
@@ -490,7 +565,7 @@ async function main() {
 
   // mulai baca OpenClaw di latar (tak memblok)
   refreshAgentName();
-  if (TEACHER || STUDENT) { refreshAgents(); refreshTasks(); refreshBusy(); } else refreshSubAgent();
+  if (TEACHER || STUDENT) { refreshAgents(); refreshTasks(); refreshBusy(); refreshToolActivity(); } else refreshSubAgent();
 
   let hb, rs, rn, bye;
 
@@ -500,7 +575,7 @@ async function main() {
     await tickTeacher();
     // tick secepat refresh biar sub-agent yang cuma hidup ~6-8 dtk tetap kelihatan
     hb = setInterval(() => tickTeacher(), CONFIG.REFRESH_MS);
-    rs = setInterval(() => { refreshTasks(); refreshBusy(); }, CONFIG.REFRESH_MS);
+    rs = setInterval(() => { refreshTasks(); refreshBusy(); refreshToolActivity(); }, CONFIG.REFRESH_MS);
     rn = setInterval(() => { refreshAgentName(); refreshAgents(); }, 30000);
     bye = async () => {
       clearInterval(hb); clearInterval(rs); clearInterval(rn);
@@ -514,7 +589,7 @@ async function main() {
     console.log(`[torang-monitor] aktif -> ${base()} [target=star-office/MURID] · label="${CONFIG.LABEL}" · 4 agent(main+worker)->guest · refresh ${CONFIG.REFRESH_MS / 1000}s`);
     await tickWorkers(true);
     hb = setInterval(() => tickWorkers(true), CONFIG.REFRESH_MS);
-    rs = setInterval(() => { refreshTasks(); refreshBusy(); }, CONFIG.REFRESH_MS);
+    rs = setInterval(() => { refreshTasks(); refreshBusy(); refreshToolActivity(); }, CONFIG.REFRESH_MS);
     rn = setInterval(() => { refreshAgentName(); refreshAgents(); }, 30000);
     bye = async () => {
       clearInterval(hb); clearInterval(rs); clearInterval(rn);
