@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 /**
- * Torang Class Monitor — guest client (v3.8 · routing by-aktivitas: main KELUAR Ruang Tamu)
+ * Torang Class Monitor — guest client (v3.9 · main SIBUK tak pernah balik Ruang Tamu)
+ * ================================================================
+ * FIX v3.9 (bug "main bolak-balik web->tamu->data->tamu; tulis laporan malah ke Tamu"):
+ *   • Sebab: satu-satunya sinyal ruang datang dari tool cari/olah (web_search/web_fetch/
+ *     memory_search). Saat main pakai `bash` (menyusun file, git, MENGIRIM laporan ke
+ *     user) tak ada tool yang terpetakan -> ruang aktivitas kedaluwarsa -> v3.8 jatuh ke
+ *     'tamu'. Itulah yang bikin main "mental" ke Ruang Tamu di sela-sela kerja.
+ *   • Perbaikan: main yang SEDANG SIBUK tak pernah lagi ke Ruang Tamu. Kalau lagi tak
+ *     ada aktivitas cari/olah -> dianggap fase "sampaikan/hasilkan" -> RUANG CS.
+ *     Jadi: cari(web) -> olah(data) -> sampaikan/laporan(CS). Ruang Tamu HANYA untuk
+ *     main yang BELUM pernah kerja & benar-benar nganggur; kalau sudah pernah kerja &
+ *     nganggur -> Standby (bukan Tamu). Worker tak berubah (fallback ke ruang identitasnya).
  * ================================================================
  * BARU v3.8 (Cara A — main/worker pindah ruang sesuai APA yang dikerjakan):
  *   • Baca `openclaw audit --kind tool_action --json` (metadata-only): tahu tiap agent
@@ -511,13 +522,18 @@ async function tickWorkers(includeMain) {
     const lingerBusy = busyNow || (now - lastBusy < CONFIG.WORK_LINGER_MS);
     // v3.5: main yang PERNAH kerja -> STANDBY saat selesai; Ruang Tamu hanya utk yg belum pernah kerja.
     const hadWorked = (g0 && g0.hasWorked) || busyNow;
-    // prioritas ruang: aktivitas main sendiri -> ikut ruang tim (mengawasi) -> Ruang Tamu.
+    // prioritas ruang: aktivitas main sendiri (cari/olah) -> ikut ruang tim (mengawasi).
     const mroom = actRoom || teamRoom;
-    const room = lingerBusy ? (mroom || 'tamu') : (hadWorked ? 'standby' : 'tamu');
-    const detail = busyNow ? (actRoom ? `kerja: ${actRoom}` : (teamRoom ? `mengawasi: ${teamRoom}` : 'sedang bekerja'))
+    // [TORANG] v3.9 — main SIBUK TAK PERNAH balik Ruang Tamu:
+    //   ada aktivitas cari/olah -> ruang itu (web/data) ; sibuk tapi tak ada aktivitas
+    //   cari/olah (mis. `bash`: menyusun file / MENGIRIM laporan ke user) -> fase
+    //   "sampaikan/hasilkan" -> RUANG CS. Ruang Tamu hanya utk yg BELUM pernah kerja &
+    //   nganggur; sudah pernah kerja & nganggur -> Standby.
+    const room = lingerBusy ? (mroom || 'cs') : (hadWorked ? 'standby' : 'tamu');
+    const detail = busyNow ? (actRoom ? `kerja: ${actRoom}` : (teamRoom ? `mengawasi: ${teamRoom}` : 'menyusun & menyampaikan hasil'))
       : (lingerBusy ? 'menyelesaikan…' : (hadWorked ? 'menunggu tugas' : 'menunggu perintah'));
     const g = await pushGuest(desiredIds, now, key, label(m.name), room,
-      lingerBusy ? (ROOM_STATE[mroom] || 'executing') : 'idle', detail);
+      lingerBusy ? (ROOM_STATE[room] || 'executing') : 'idle', detail);
     if (busyNow) { g.hasWorked = true; g.lastBusyAt = now; }
   }
 
