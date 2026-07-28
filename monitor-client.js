@@ -158,7 +158,7 @@ const CONFIG = {
   AGENT_ID:   process.env.TORANG_AGENT_ID   || FILECFG.agentId   || '',
   HEARTBEAT_MS: Number(process.env.TORANG_HEARTBEAT_MS || FILECFG.heartbeatMs || 15000),
   REFRESH_MS:   Number(process.env.TORANG_REFRESH_MS   || FILECFG.refreshMs   || 4000),  // cek + tick tiap 4s (sub-agent cepat ~6-8s)
-  CLI_TIMEOUT_MS: Number(process.env.TORANG_CLI_TIMEOUT_MS || FILECFG.cliTimeoutMs || 20000),
+  CLI_TIMEOUT_MS: Number(process.env.TORANG_CLI_TIMEOUT_MS || FILECFG.cliTimeoutMs || 90000),
   SIMULATE_SUBAGENT: process.env.TORANG_SIMULATE_SUBAGENT || FILECFG.simulateSubAgent || '',
   OPENCLAW_BIN: process.env.TORANG_OPENCLAW_BIN || FILECFG.openclawBin || 'openclaw',
   POLL_NAME: process.env.TORANG_POLL_NAME === '1',                                    // default OFF (nama dari config/env)
