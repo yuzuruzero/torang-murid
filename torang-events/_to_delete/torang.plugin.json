@@ -1,0 +1,12 @@
+{
+  "id": "torang-events",
+  "name": "Torang Events",
+  "description": "Dorong subagent baru lahir & aktivitas tool ke Torang office (hatch instan)",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}
