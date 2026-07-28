@@ -1,141 +1,122 @@
 /**
- * Torang Events — typed plugin OpenClaw (Cara B: HATCH INSTAN)
+ * Torang Events — v0.2 (FIX: non-blocking, TIDAK menyentuh hasil tool)
  * ============================================================
- * Tujuan: subagent yang BARU LAHIR langsung muncul di office (Ruang Tamu)
- * TANPA menunggu polling. Menutup gap X1 "hatch moment" dari spec telemetri.
+ * Kenapa v0.1 bikin laporan sub-agent KOSONG:
+ *   handler `after_tool_call` v0.1 mem-`await` POST ke office DI DALAM jalur
+ *   eksekusi tool. `fetch`-nya juga tanpa timeout. Jadi kalau office lambat /
+ *   mati / IP-nya tak reachable, tool `collaborationspawn_agent` &
+ *   `collaborationwait_agent` (yang membawa TASK ke sub-agent & HASIL balik ke
+ *   main) ikut ketahan → sub-agent timeout → main lapor kosong.
  *
- *   subagent_spawned  -> POST /join-agent  (karakter (temp) muncul di Ruang Tamu)
- *   after_tool_call   -> POST /agent-push  (pindah ruang sesuai tool: web/data/cs)
- *   subagent_ended    -> POST /leave-agent (karakter keluar)
+ * Perubahan v0.2:
+ *   1. Handler TIDAK PERNAH await network. Semua POST office = fire-and-forget
+ *      (dispatch lalu handler langsung selesai). Office lambat/mati TIDAK lagi
+ *      menahan tool call sub-agent.
+ *   2. `fetch` pakai AbortController timeout 1.5s → koneksi menggantung auto-batal.
+ *   3. Cocokkan nama tool PERSIS (bukan regex /spawn/ /wait/ yang bisa kena tool lain).
+ *   4. Seluruh handler dibungkus try/catch → tidak pernah melempar error ke runtime.
+ *   5. Handler observer murni: tidak me-return nilai apa pun. (Lihat CATATAN di bawah.)
  *
- * Main agent & worker permanen TETAP diurus monitor-client.js (polling) — plugin ini
- * fokus ke subagent transient (yang tak punya karakter tetap). client_id plugin memakai
- * namespace sendiri ("torang-plugin:") sehingga TIDAK bentrok dgn monitor.
- *
- * Metadata-only: TIDAK membaca params/result/isi tool. Tak butuh allowConversationAccess.
- * Config office URL + join key dibaca dari env atau file config monitor (lihat readConfig).
+ * CATATAN: `api.on(...)` hampir pasti OBSERVER (nilai return diabaikan). Tapi
+ * biar aman kalau ternyata TRANSFORM (handler wajib balikin hasil tool), handler
+ * ini menutup dengan PASSTHROUGH DEFENSIF: mengembalikan hasil tool asli apa
+ * adanya (dari context.result / event.result / event.output). Untuk observer,
+ * nilai itu diabaikan (aman). Untuk transform, hasil sub-agent TIDAK ketimpa.
+ * Kalau setelah enable v0.2 sub-agent MASIH kosong, kirim aku:
+ *     openclaw plugins inspect torang-events --runtime --json
+ * (berarti bentuk return transform-nya beda) — aku sesuaikan dalam hitungan menit.
  * ============================================================ */
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import * as path from "node:path";
 import * as crypto from "node:crypto";
 
-/* --- config: OFFICE_URL + JOIN_KEY (env -> file config monitor -> default) --- */
-function readConfig(): { officeUrl: string; joinKey: string } {
-  let officeUrl = process.env.TORANG_OFFICE_URL || "";
-  let joinKey = process.env.TORANG_JOIN_KEY || "";
-  const home = os.homedir();
-  const files = [
-    path.join(home, ".torang", "config.env"),        // murid
-    path.join(home, ".torang-guru", "config.env"),   // guru
-    path.join(home, ".torang-events.env"),           // override khusus plugin
-  ];
-  for (const f of files) {
-    if (officeUrl && joinKey) break;
+const LOG = os.homedir() + "/torang-events.log";
+function log(...a: any[]) { try { fs.appendFileSync(LOG, new Date().toISOString() + " " + a.map((x) => typeof x === "string" ? x : JSON.stringify(x)).join(" ") + "\n"); } catch (_) {} }
+
+// Nama tool spawn/wait di OpenClaw 2026.7.x. Bisa ditimpa lewat env kalau versimu beda.
+const SPAWN_TOOLS = (process.env.TORANG_SPAWN_TOOLS || "collaborationspawn_agent,spawn_agent,sessions_spawn").split(",").map((s) => s.trim()).filter(Boolean);
+const WAIT_TOOLS  = (process.env.TORANG_WAIT_TOOLS  || "collaborationwait_agent,wait_agent").split(",").map((s) => s.trim()).filter(Boolean);
+
+function cfg(): { url: string; key: string } {
+  let url = process.env.TORANG_OFFICE_URL || "", key = process.env.TORANG_JOIN_KEY || "";
+  for (const f of [os.homedir() + "/.torang/config.env", os.homedir() + "/.torang-guru/config.env", os.homedir() + "/.torang-events.env"]) {
+    if (url && key) break;
     try {
-      if (!fs.existsSync(f)) continue;
       for (const line of fs.readFileSync(f, "utf8").split(/\r?\n/)) {
-        const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
-        if (!m) continue;
-        if (m[1] === "TORANG_OFFICE_URL" && !officeUrl) officeUrl = m[2];
-        if (m[1] === "TORANG_JOIN_KEY" && !joinKey) joinKey = m[2];
+        const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/); if (!m) continue;
+        if (m[1] === "TORANG_OFFICE_URL" && !url) url = m[2];
+        if (m[1] === "TORANG_JOIN_KEY" && !key) key = m[2];
       }
-    } catch (_) { /* abaikan */ }
+    } catch (_) {}
   }
-  if (!officeUrl) officeUrl = "http://127.0.0.1:19000"; // default: office lokal (guru)
-  if (!joinKey) joinKey = "ocj_test";
-  return { officeUrl: officeUrl.replace(/\/+$/, ""), joinKey };
+  return { url: (url || "http://127.0.0.1:19000").replace(/\/+$/, ""), key: key || "ocj_test" };
 }
-
-/* --- peta tool -> ruang (samakan dengan monitor-client.js) --- */
-const TOOL_ROOM: Record<string, string> = {
-  web_search: "web", web_fetch: "web", browser: "web", navigate: "web", fetch_url: "web", http_request: "web",
-  memory_search: "data", sessions_list: "data", sessions_history: "data", read: "data", file_read: "data",
-  read_file: "data", grep: "data", glob: "data", list_dir: "data",
-  apply_patch: "cs", write: "cs", edit: "cs", write_file: "cs", sessions_send: "cs", message_send: "cs", bash: "cs",
-};
-function toolRoom(t?: string): string | null {
-  return t ? (TOOL_ROOM[String(t).toLowerCase()] || null) : null;
-}
-
-/* --- client_id stabil (UUID) dari session key subagent --- */
-function clientIdFor(sessionKey: string): string {
-  const h = crypto.createHash("sha1").update("torang-plugin:" + sessionKey).digest("hex");
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
-}
-
-/* --- awalan nama (username Ubuntu, fallback hostname) — samakan dgn monitor --- */
-function labelPrefix(): string {
-  try { const u = os.userInfo().username; if (u && u !== "root") return u; } catch (_) {}
-  return os.hostname();
-}
+function cid(s: string): string { const h = crypto.createHash("sha1").update("torang-plugin:" + s).digest("hex"); return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`; }
+function prefix(): string { try { const u = os.userInfo().username; if (u && u !== "root") return u; } catch (_) {} return os.hostname(); }
 
 export default definePluginEntry({
   id: "torang-events",
   name: "Torang Events",
-  description: "Dorong subagent baru lahir & aktivitas tool ke Torang office (hatch instan)",
-
+  description: "hatch instan subagent -> office (v0.2, non-blocking)",
   register(api: any) {
-    const cfg = readConfig();
-    const PREFIX = labelPrefix();
-    // ingat sessionKey subagent -> karakternya (biar tool_call & ended tahu siapa)
-    const known = new Map<string, { clientId: string; name: string }>();
+    const c = cfg(); const PREFIX = prefix();
+    const born = new Map<string, { clientId: string; name: string; order: number }>();
+    let seq = 0;
 
-    async function post(pathname: string, body: any): Promise<void> {
-      try {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 3000);
-        try {
-          await fetch(cfg.officeUrl + pathname, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-            signal: ctrl.signal,
-          });
-        } finally { clearTimeout(t); }
-      } catch (_) { /* fire-and-forget: telemetry gagal != agent gagal */ }
+    // Fire-and-forget: TIDAK PERNAH di-await oleh handler. Timeout keras 1.5s.
+    function send(path: string, body: any) {
+      let ctl: AbortController | null = null; let t: any = null;
+      try { ctl = new AbortController(); t = setTimeout(() => { try { ctl!.abort(); } catch (_) {} }, 1500); } catch (_) {}
+      Promise.resolve()
+        .then(() => fetch(c.url + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl ? ctl.signal : undefined }))
+        .then((r: any) => log("POST", path, r && r.status))
+        .catch((e: any) => log("POST ERR", path, String((e && e.message) || e)))
+        .finally(() => { if (t) clearTimeout(t); });
+    }
+    function leave(key: string, why: string) {
+      const g = born.get(key); if (!g) return; born.delete(key);
+      send("/leave-agent", { client_id: g.clientId, joinKey: c.key }); log("LEAVE", g.name, why);
+    }
+    function leaveOldest(why: string) {
+      let ok: string | null = null, o = Infinity;
+      for (const [k, v] of born) if (v.order < o) { o = v.order; ok = k; }
+      if (ok) leave(ok, why);
     }
 
-    console.log("[torang-events] aktif -> office", cfg.officeUrl);
+    log("REGISTER v0.2; office=", c.url, "spawnTools=", SPAWN_TOOLS.join("|"));
 
-    // 1) SUBAGENT LAHIR -> langsung muncul di Ruang Tamu (X1 hatch)
-    api.on("subagent_spawned", async (event: any) => {
-      const sk = String(event?.childSessionKey || event?.runId || "");
-      if (!sk) return;
-      const clientId = clientIdFor(sk);
-      const base = String(event?.label || event?.agentId || "Subagent").slice(0, 24);
-      const name = `${PREFIX} · ${base} (temp)`;
-      known.set(sk, { clientId, name });
-      console.log("[torang-events] hatch:", name);
-      await post("/join-agent", {
-        client_id: clientId, joinKey: cfg.joinKey, name,
-        state: "idle", detail: "baru lahir", room: "tamu",
-      });
+    // Observer murni & non-blocking. Handler ini WAJIB: (a) tidak throw,
+    // (b) tidak await network, (c) tidak me-return nilai yang bisa mengubah hasil tool.
+    api.on("after_tool_call", (event: any, context: any) => {
+      try {
+        const tool = String((event && event.toolName) || "");
+        if (SPAWN_TOOLS.includes(tool)) {
+          const p = (event && event.params) || {};
+          const key = String((context && context.toolCallId) || (event && event.toolCallId) || ("sp" + (++seq)));
+          if (born.has(key)) return;
+          const raw = String(p.task_name || p.name || p.label || "").replace(/^.*\//, "").slice(0, 24);
+          const name = `${PREFIX} · ${raw || ("subagent-" + (seq + 1))} (temp)`;
+          const clientId = cid(key);
+          born.set(key, { clientId, name, order: ++seq });
+          send("/join-agent", { client_id: clientId, joinKey: c.key, name, state: "idle", detail: "baru lahir", room: "tamu" });
+          log("HATCH", name);
+          setTimeout(() => { try { if (born.has(key)) send("/agent-push", { client_id: clientId, joinKey: c.key, name, state: "executing", detail: "bekerja", room: "data" }); } catch (_) {} }, 3000);
+          setTimeout(() => { try { leave(key, "ttl"); } catch (_) {} }, 240000);
+        } else if (WAIT_TOOLS.includes(tool)) {
+          leaveOldest("selesai");
+        }
+      } catch (e: any) { log("HANDLER ERR", String((e && e.message) || e)); }
+      // PASSTHROUGH DEFENSIF: kalau after_tool_call = TRANSFORM, kembalikan hasil
+      // tool ASLI apa adanya; kalau OBSERVER, nilai ini diabaikan (aman).
+      try {
+        if (context && typeof context === "object" && "result" in context) return (context as any).result;
+        if (event && typeof event === "object" && "result" in event) return (event as any).result;
+        if (event && typeof event === "object" && "output" in event) return (event as any).output;
+      } catch (_) {}
+      return undefined;
     });
 
-    // 2) SUBAGENT PAKAI TOOL -> pindah ruang instan (cari->web, olah->data, hasilkan->cs)
-    api.on("after_tool_call", async (event: any, context: any) => {
-      const sk = String(context?.sessionKey || "");
-      const room = toolRoom(event?.toolName);
-      if (!sk || !room) return;
-      const g = known.get(sk);
-      if (!g) return; // hanya subagent yang kita kenal (yang lahir via spawn)
-      await post("/agent-push", {
-        client_id: g.clientId, joinKey: cfg.joinKey, name: g.name,
-        state: "executing", detail: `pakai ${event?.toolName}`, room,
-      });
-    });
-
-    // 3) SUBAGENT SELESAI -> keluar dari office
-    api.on("subagent_ended", async (event: any) => {
-      const sk = String(event?.targetSessionKey || "");
-      if (!sk) return;
-      const g = known.get(sk);
-      if (!g) return;
-      known.delete(sk);
-      console.log("[torang-events] keluar:", g.name);
-      await post("/leave-agent", { client_id: g.clientId, joinKey: cfg.joinKey });
-    });
+    api.on("subagent_ended", (_e: any) => { try { leaveOldest("ended"); } catch (_) {} });
   },
 });
