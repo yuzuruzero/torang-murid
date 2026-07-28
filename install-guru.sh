@@ -409,15 +409,15 @@ say "=================== SELESAI ==================="
                 || say "Office belum kebaca di :$PORT — cek $GDIR/office.log"
 say "Key kelas    : $JOIN_KEY   (maxConcurrent $MAXCONC)"
 echo ""
-echo "  >>> PERINTAH UNTUK MURID (tempel di WSL tiap PC murid): <<<"
-echo "  -----------------------------------------------------------------"
-echo "  TORANG_OFFICE_URL=http://$LANIP:$PORT TORANG_JOIN_KEY=$JOIN_KEY \\"
-echo "  bash <(curl -fsSL $BASE_URL/install.sh)"
-echo "  -----------------------------------------------------------------"
-echo ""
-say "IP terdeteksi : $LANIP"
-[ -n "$ALLIP" ] && say "Semua IP PC ini: $(echo $ALLIP | tr '\n' ' ')  <- kalau murid tak konek, coba IP lain ini"
-say "Lihat perintah murid + IP terkini kapan saja : bash $GDIR/torang-key.sh"
+# Bikin installer murid (disajikan office di /static/murid.sh) + cetak perintah murid,
+# lewat torang-key.sh (IP & key otomatis, murid cukup PASTE 1 baris).
+if [ -x "$GDIR/torang-key.sh" ]; then
+  bash "$GDIR/torang-key.sh" "$JOIN_KEY" "$MAXCONC" || true
+else
+  echo "  >>> PERINTAH MURID (tempel di WSL tiap PC murid): <<<"
+  echo "  TORANG_OFFICE_URL=http://$LANIP:$PORT TORANG_JOIN_KEY=$JOIN_KEY bash <(curl -fsSL $BASE_URL/install.sh)"
+  [ -n "$ALLIP" ] && say "Semua IP PC ini: $(echo $ALLIP | tr '\n' ' ')"
+fi
 say "Ganti key kelas kapan saja : bash $GDIR/torang-key.sh <key-baru>"
 say "Log office/monitor         : $GDIR/office.log  |  $GDIR/monitor.log"
 say "Stop / Start               : $GDIR/stop.sh  |  $GDIR/start.sh"
