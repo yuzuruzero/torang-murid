@@ -1,37 +1,47 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  TORANG - Pemasang OFFICE + MONITOR GURU (versi bash / curl|bash)
-#  Jalankan di WSL PC GURU (setelah OpenClaw & folder office ada):
+#  TORANG - Pemasang OFFICE + MONITOR GURU (turnkey / curl|bash)
+#  Jalankan di WSL PC GURU:
 #
 #    curl -fsSL https://raw.githubusercontent.com/yuzuruzero/torang-murid/main/install-guru.sh | bash
 #
 #  Yang diurus otomatis:
-#    1) .wslconfig (batasi RAM WSL biar Windows tak nge-hang)
-#    2) launcher office (app.py) + monitor guru (peran teacher)
-#    3) auto-start tiap buka WSL (.bashrc)
-#    4) JARINGAN LAN (portproxy+firewall) via PowerShell admin (muncul UAC -> klik Yes)
-#    5) scheduled task Windows: relink portproxy tiap 2 menit + nyalakan office saat PC login
+#    1) CLONE office (torang-office) dari GitHub kalau belum ada lokal
+#    2) PASANG Python venv + flask (fresh clone tak punya .venv) -> office langsung jalan
+#    3) join-keys.json: key kelas + maxConcurrent BESAR (default 100) -> 4-10 murid muat
+#    4) .wslconfig (batasi RAM WSL biar Windows tak nge-hang)
+#    5) launcher office (app.py) + monitor guru (peran teacher), auto-restart
+#    6) auto-start tiap buka WSL (.bashrc)
+#    7) JARINGAN LAN (portproxy+firewall) via PowerShell admin (muncul UAC -> klik Yes)
+#    8) scheduled task Windows: relink portproxy tiap 2 menit + nyalakan office saat PC login
+#    9) alat ganti-key (torang-key.sh) + CETAK perintah murid siap-tempel
 #
-#  Yang HARUS sudah ada di PC guru sebelum jalanin ini:
-#    - WSL + OpenClaw terpasang (ada `node`, `python3`)
-#    - Folder office (Star-Office-UI) sudah dicopy ke PC ini (installer cari otomatis)
+#  Prasyarat di PC guru:
+#    - WSL + OpenClaw terpasang (ada `node`, `python3`, `git`)
+#    - Akses GitHub ke repo PRIVAT torang-office (salah satu):
+#        * sudah login git di PC ini (git credential manager / `gh auth login`), ATAU
+#        * kasih token saat pasang:  TORANG_GH_TOKEN=ghp_xxx  (read-only cukup)
 #
 #  Override lewat env (opsional):
-#    TORANG_OFFICE_DIR=/mnt/d/.../Star-Office-UI   folder office (kalau tak ketemu otomatis)
-#    TORANG_PORT=19000                              port office
-#    TORANG_JOIN_KEY=ocj_test                       join key
-#    TORANG_WSL_MEM=3GB / TORANG_WSL_CPU=2 / TORANG_WSL_SWAP=2GB   batas WSL
-#    TORANG_NO_NET=1        lewati setup jaringan Windows (kalau mau atur sendiri)
-#    TORANG_NO_BOOT=1       jangan pasang auto-start saat PC login
+#    TORANG_JOIN_KEY=kelas-7a         key kelas (default ocj_test)
+#    TORANG_MAXCONC=100               batas koneksi per-key (default 100)
+#    TORANG_OFFICE_DIR=/path/office   folder office kalau sudah ada lokal
+#    TORANG_OFFICE_REPO / TORANG_OFFICE_DEST / TORANG_GH_TOKEN   opsi clone
+#    TORANG_PORT=19000                port office
+#    TORANG_WSL_MEM=3GB / TORANG_WSL_CPU=2 / TORANG_WSL_SWAP=2GB  batas WSL
+#    TORANG_NO_NET=1  lewati setup jaringan Windows   |  TORANG_NO_BOOT=1  jangan auto-start saat login
 # =====================================================================
 set -e
 
 PORT="${TORANG_PORT:-19000}"
 JOIN_KEY="${TORANG_JOIN_KEY:-ocj_test}"
+MAXCONC="${TORANG_MAXCONC:-100}"
 WSL_MEM="${TORANG_WSL_MEM:-3GB}"
 WSL_CPU="${TORANG_WSL_CPU:-2}"
 WSL_SWAP="${TORANG_WSL_SWAP:-2GB}"
 BASE_URL="${TORANG_BASE_URL:-https://raw.githubusercontent.com/yuzuruzero/torang-murid/main}"
+OFFICE_REPO="${TORANG_OFFICE_REPO:-https://github.com/yuzuruzero/torang-office.git}"
+OFFICE_DEST="${TORANG_OFFICE_DEST:-$HOME/torang-office}"
 GDIR="$HOME/.torang-guru"
 
 say(){ echo "[Torang-Guru] $*"; }
@@ -44,7 +54,6 @@ die(){ echo "[Torang-Guru] GAGAL: $*" >&2; exit 1; }
 WINUSER="$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r\n')"
 WINPROFILE="/mnt/c/Users/$WINUSER"
 if [ -z "$WINUSER" ] || [ ! -d "$WINPROFILE" ]; then
-  # fallback: tebak dari folder Users yang punya file (bukan Public/Default)
   for d in /mnt/c/Users/*/; do
     b="$(basename "$d")"
     case "$b" in Public|Default|Default*|All*|desktop.ini) continue;; esac
@@ -56,19 +65,18 @@ say "User Windows: $WINUSER  ->  $WINPROFILE"
 
 # --- deteksi folder office (yang ada backend/app.py) ---------------------
 find_office(){
-  # 1) env
   if [ -n "$TORANG_OFFICE_DIR" ] && [ -f "$TORANG_OFFICE_DIR/backend/app.py" ]; then
     echo "$TORANG_OFFICE_DIR"; return 0
   fi
-  # 2) lokasi umum
   for c in \
+    "$OFFICE_DEST" \
+    /mnt/d/projects/torangapp/torang-office \
     /mnt/d/projects/torangapp/Star-Office-UI \
     /mnt/c/projects/torangapp/Star-Office-UI \
     "$HOME/torangapp/Star-Office-UI" \
     "$HOME/Star-Office-UI" ; do
     [ -f "$c/backend/app.py" ] && { echo "$c"; return 0; }
   done
-  # 3) scan dangkal beberapa drive
   for base in /mnt/d /mnt/c /mnt/e /mnt/f; do
     [ -d "$base" ] || continue
     hit="$(find "$base" -maxdepth 5 -type f -path '*/backend/app.py' 2>/dev/null | head -1)"
@@ -79,9 +87,97 @@ find_office(){
 
 say "Mencari folder office (ada backend/app.py)..."
 OFFICE_DIR="$(find_office || true)"
-[ -n "$OFFICE_DIR" ] || die "Folder office tak ketemu. Copy dulu folder Star-Office-UI ke PC ini, atau set TORANG_OFFICE_DIR=/mnt/.../Star-Office-UI lalu ulangi."
-[ -f "$OFFICE_DIR/backend/app.py" ] || die "backend/app.py tak ada di $OFFICE_DIR"
+
+# --- kalau office belum ada lokal -> CLONE otomatis dari GitHub (repo privat) ---
+if [ -z "$OFFICE_DIR" ]; then
+  command -v git >/dev/null 2>&1 || die "Office tak ada & 'git' tak terpasang. Pasang git, atau copy folder office manual."
+  if [ -f "$OFFICE_DEST/backend/app.py" ]; then
+    say "Office hasil clone sebelumnya ditemukan: $OFFICE_DEST"
+    OFFICE_DIR="$OFFICE_DEST"
+  else
+    say "Office lokal tak ketemu -> CLONE dari $OFFICE_REPO"
+    CLONE_URL="$OFFICE_REPO"
+    if [ -n "$TORANG_GH_TOKEN" ]; then
+      SLUG="$(echo "$OFFICE_REPO" | sed -E 's#https?://github.com/##; s#\.git$##')"
+      CLONE_URL="https://x-access-token:${TORANG_GH_TOKEN}@github.com/${SLUG}.git"
+    fi
+    rm -rf "$OFFICE_DEST" 2>/dev/null || true
+    if git clone --depth 1 "$CLONE_URL" "$OFFICE_DEST" 2>&1 | sed 's/x-access-token:[^@]*@/x-access-token:***@/g' | tail -4; then :; fi
+    if [ -f "$OFFICE_DEST/backend/app.py" ]; then
+      OFFICE_DIR="$OFFICE_DEST"; say "Office ter-clone ke: $OFFICE_DIR"
+    fi
+  fi
+fi
+
+if [ -z "$OFFICE_DIR" ] || [ ! -f "$OFFICE_DIR/backend/app.py" ]; then
+  die "Office tak ketemu & clone gagal. Repo torang-office PRIVAT butuh akses GitHub:
+       - login dulu di PC ini: 'gh auth login'  (atau git credential manager), ATAU
+       - kasih token saat pasang: TORANG_GH_TOKEN=ghp_xxx <perintah installer>
+       Atau copy folder office manual & set TORANG_OFFICE_DIR=/mnt/.../office."
+fi
 say "Office: $OFFICE_DIR"
+
+# =====================================================================
+#  [BARU] PYTHON venv + flask  — fresh clone tak punya .venv (tanpa ini office error flask)
+# =====================================================================
+PYBIN="python3"
+if python3 -c "import flask" 2>/dev/null; then
+  say "flask sudah ada di python3 sistem."
+else
+  VENV="$OFFICE_DIR/.venv"
+  say "Menyiapkan Python + flask (bikin venv + pasang dependensi)..."
+  if [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c "import flask" 2>/dev/null; then
+    PYBIN="$VENV/bin/python"
+  elif python3 -m venv "$VENV" 2>/dev/null; then
+    "$VENV/bin/python" -m ensurepip >/dev/null 2>&1 || true
+    "$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+    if [ -f "$OFFICE_DIR/backend/requirements.txt" ]; then
+      "$VENV/bin/pip" install --quiet -r "$OFFICE_DIR/backend/requirements.txt" || true
+    else
+      "$VENV/bin/pip" install --quiet flask || true
+    fi
+    "$VENV/bin/python" -c "import flask" 2>/dev/null && PYBIN="$VENV/bin/python"
+  fi
+  if ! "$PYBIN" -c "import flask" 2>/dev/null; then
+    say "venv gagal -> coba pip sistem."
+    pip3 install --quiet flask 2>/dev/null \
+      || pip3 install --quiet --break-system-packages flask 2>/dev/null \
+      || pip3 install --quiet --user flask 2>/dev/null || true
+    python3 -c "import flask" 2>/dev/null && PYBIN="python3"
+  fi
+  "$PYBIN" -c "import flask" 2>/dev/null \
+    || die "Gagal memasang flask. Manual: python3 -m venv \"$OFFICE_DIR/.venv\" && \"$OFFICE_DIR/.venv/bin/pip\" install -r \"$OFFICE_DIR/backend/requirements.txt\""
+  say "Python siap: $PYBIN"
+fi
+
+# =====================================================================
+#  [BARU] join-keys.json — pastikan key kelas ADA + maxConcurrent BESAR
+#         (office menolak key tak terdaftar & default maxConcurrent cuma 3)
+# =====================================================================
+JK="$OFFICE_DIR/join-keys.json"
+python3 - "$JK" "$JOIN_KEY" "$MAXCONC" <<'PY'
+import json, sys, os
+path, key, mx = sys.argv[1], sys.argv[2], int(sys.argv[3])
+data = {"keys": []}
+if os.path.exists(path):
+    try:
+        with open(path, encoding="utf-8") as f: data = json.load(f)
+    except Exception: data = {"keys": []}
+if not isinstance(data, dict) or "keys" not in data: data = {"keys": []}
+keys = data["keys"]
+it = next((k for k in keys if k.get("key") == key), None)
+if it:
+    it["reusable"] = True; it["maxConcurrent"] = mx; it.pop("expiresAt", None)
+else:
+    keys.append({"key": key, "used": False, "reusable": True, "maxConcurrent": mx,
+                 "usedBy": None, "usedByAgentId": None, "usedAt": None})
+data["keys"] = keys
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+os.replace(tmp, path)
+print(f"[join-keys] key '{key}' siap (maxConcurrent={mx}, reusable)")
+PY
 
 # --- siapkan folder guru -------------------------------------------------
 mkdir -p "$GDIR"
@@ -106,11 +202,24 @@ else
 fi
 [ -s "$GDIR/monitor-client.js" ] || die "monitor-client.js kosong/gagal."
 
+# --- [BARU] alat ganti-key (torang-key.sh) ------------------------------
+KEY_LOCAL=""
+for c in \
+  "$(dirname "$OFFICE_DIR")/star-office-tools/torang-key.sh" \
+  "$OFFICE_DIR/../star-office-tools/torang-key.sh" ; do
+  [ -f "$c" ] && { KEY_LOCAL="$c"; break; }
+done
+if [ -n "$KEY_LOCAL" ]; then cp "$KEY_LOCAL" "$GDIR/torang-key.sh"
+else curl -fsSL "$BASE_URL/torang-key.sh" -o "$GDIR/torang-key.sh" 2>/dev/null || true; fi
+[ -f "$GDIR/torang-key.sh" ] && chmod +x "$GDIR/torang-key.sh"
+
 # --- config.env ----------------------------------------------------------
 cat > "$GDIR/config.env" <<EOF
 TORANG_OFFICE_DIR=$OFFICE_DIR
 TORANG_PORT=$PORT
 TORANG_JOIN_KEY=$JOIN_KEY
+TORANG_MAXCONC=$MAXCONC
+TORANG_PYBIN=$PYBIN
 EOF
 
 # --- start.sh: nyalakan office + monitor guru (auto-restart) -------------
@@ -120,18 +229,19 @@ cat > "$GDIR/start.sh" <<'EOF'
 set -a; . "$HOME/.torang-guru/config.env"; set +a
 G="$HOME/.torang-guru"
 PORT="${TORANG_PORT:-19000}"
+PYBIN="${TORANG_PYBIN:-python3}"
 
 # kalau monitor guru sudah jalan -> anggap sudah nyala, keluar (hindari dobel)
 if pgrep -f "$G/monitor-client.js" >/dev/null 2>&1; then
   echo "[start] sudah jalan"; exit 0
 fi
 
-# 1) OFFICE (loop auto-restart)
+# 1) OFFICE (loop auto-restart) — pakai PYBIN (venv) biar flask kebaca
 (
   cd "$TORANG_OFFICE_DIR/backend" || exit 1
   export STAR_BACKEND_PORT="$PORT"
   while true; do
-    python3 app.py >>"$G/office.log" 2>&1
+    "$PYBIN" app.py >>"$G/office.log" 2>&1
     echo "[office] berhenti, restart 3s..." >>"$G/office.log"
     sleep 3
   done
@@ -186,7 +296,7 @@ if ! grep -q "torang-guru/start.sh" "$HOME/.bashrc" 2>/dev/null; then
 fi
 
 # --- roster bersih sekali di awal ---------------------------------------
-rm -f "$OFFICE_DIR/backend/agents-state.json" 2>/dev/null || true
+rm -f "$OFFICE_DIR/backend/agents-state.json" "$OFFICE_DIR/agents-state.json" 2>/dev/null || true
 
 # =====================================================================
 #  BAGIAN WINDOWS: jaringan LAN + auto-start saat PC login (butuh admin)
@@ -196,7 +306,6 @@ if [ "${TORANG_NO_NET:-0}" != "1" ]; then
   [ "${TORANG_NO_BOOT:-0}" != "1" ] && BOOTLINE="setboot"
 
   SETUP_LX="$WINPROFILE/torang-guru-setup.ps1"
-  # tulis setup.ps1 (baris pertama inject $port & flag boot, sisanya literal)
   {
     echo "\$port = $PORT"
     if [ -n "$BOOTLINE" ]; then echo "\$doBoot = \$true"; else echo "\$doBoot = \$false"; fi
@@ -263,7 +372,6 @@ PSEOF
 
   SETUP_WIN="$(wslpath -w "$SETUP_LX")"
   say "Menyiapkan jaringan Windows (akan muncul UAC -> klik YES)..."
-  # jalankan elevated & tunggu
   powershell.exe -NoProfile -Command \
     "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','$SETUP_WIN'" \
     || say "PERINGATAN: setup jaringan gagal/di-cancel. Jalankan ulang installer atau buka jaringan manual."
@@ -279,16 +387,33 @@ say "Menyalakan office + monitor sekarang..."
 "$GDIR/stop.sh" >/dev/null 2>&1 || true
 sleep 1
 nohup "$GDIR/start.sh" >>"$GDIR/boot.log" 2>&1 &
-sleep 4
+sleep 5
 
-# tampilkan IP LAN buat dibagikan ke murid
+# --- tunggu office benar-benar siap (biar pesan akhir akurat) ---
+OK=0
+for i in $(seq 1 20); do
+  if command -v curl >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:$PORT/status" >/dev/null 2>&1; then OK=1; break; fi
+  sleep 1
+done
+
+# --- IP LAN buat murid ---
 LANIP="$(cmd.exe /c 'ipconfig' 2>/dev/null | tr -d '\r' | awk '/IPv4/{print $NF}' | grep -E '^192\.|^10\.|^172\.' | head -1)"
+[ -z "$LANIP" ] && LANIP="IP-GURU"
+
 echo ""
 say "=================== SELESAI ==================="
-say "Office     : http://127.0.0.1:$PORT  (di PC guru)"
-[ -n "$LANIP" ] && say "Untuk murid: http://$LANIP:$PORT   (alamat office guru)"
-say "Log office : $GDIR/office.log"
-say "Log monitor: $GDIR/monitor.log"
-say "Hentikan   : $GDIR/stop.sh    |  Nyalakan lagi: $GDIR/start.sh"
-say "Auto-start : tiap buka WSL + (kalau dipasang) saat PC login."
+[ "$OK" = "1" ] && say "Office AKTIF : http://127.0.0.1:$PORT  (buka di PC guru, Ctrl+F5)" \
+                || say "Office belum kebaca di :$PORT — cek $GDIR/office.log"
+say "Key kelas    : $JOIN_KEY   (maxConcurrent $MAXCONC)"
+echo ""
+echo "  >>> PERINTAH UNTUK MURID (tempel di WSL tiap PC murid): <<<"
+echo "  -----------------------------------------------------------------"
+echo "  TORANG_OFFICE_URL=http://$LANIP:$PORT TORANG_JOIN_KEY=$JOIN_KEY \\"
+echo "  bash <(curl -fsSL $BASE_URL/install.sh)"
+echo "  -----------------------------------------------------------------"
+echo ""
+say "Ganti key kelas kapan saja : bash $GDIR/torang-key.sh <key-baru>"
+say "Log office/monitor         : $GDIR/office.log  |  $GDIR/monitor.log"
+say "Stop / Start               : $GDIR/stop.sh  |  $GDIR/start.sh"
+say "Auto-start                 : tiap buka WSL + (kalau dipasang) saat PC login."
 say "==============================================="
