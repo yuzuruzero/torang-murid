@@ -66,8 +66,11 @@ print(f"[key] OK -> '{key}'  (maxConcurrent={mx}, reusable, tanpa kedaluwarsa)")
 print(f"[key] Total key aktif di office: {len(keys)}  ->  {[k.get('key') for k in keys]}")
 PY
 
-# --- IP LAN guru untuk murid ---
-IP="$(cmd.exe /c 'ipconfig' 2>/dev/null | tr -d '\r' | awk '/IPv4/{print $NF}' | grep -E '^192\.|^10\.|^172\.' | head -1)"
+# --- IP LAN guru untuk murid (utamakan 192.168.*, lalu 10.*, terakhir 172.*=sering adapter WSL) ---
+ALLIP="$(cmd.exe /c 'ipconfig' 2>/dev/null | tr -d '\r' | awk '/IPv4/{print $NF}' | grep -E '^(192\.168|10\.|172\.)')"
+IP="$(echo "$ALLIP" | grep -E '^192\.168\.' | head -1)"
+[ -z "$IP" ] && IP="$(echo "$ALLIP" | grep -E '^10\.' | head -1)"
+[ -z "$IP" ] && IP="$(echo "$ALLIP" | grep -E '^172\.' | head -1)"
 [ -z "$IP" ] && IP="IP-GURU"
 
 echo ""
@@ -77,6 +80,7 @@ echo "------------------------------------------------------------------"
 echo "  TORANG_OFFICE_URL=http://$IP:$PORT TORANG_JOIN_KEY=$KEY \\"
 echo "  bash <(curl -fsSL https://raw.githubusercontent.com/yuzuruzero/torang-murid/main/install.sh)"
 echo "=================================================================="
-echo "  Office aktif      : http://$IP:$PORT"
+echo "  Office aktif      : http://$IP:$PORT   (key: $KEY)"
+[ -n "$ALLIP" ] && echo "  Semua IP PC ini   : $(echo $ALLIP | tr '\n' ' ')  <- kalau murid tak konek, coba IP lain"
 echo "  Ganti key kapan pun: bash torang-key.sh <key-baru>   (langsung berlaku, tanpa restart)"
 echo "=================================================================="

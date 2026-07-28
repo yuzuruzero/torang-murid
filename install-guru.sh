@@ -396,8 +396,11 @@ for i in $(seq 1 20); do
   sleep 1
 done
 
-# --- IP LAN buat murid ---
-LANIP="$(cmd.exe /c 'ipconfig' 2>/dev/null | tr -d '\r' | awk '/IPv4/{print $NF}' | grep -E '^192\.|^10\.|^172\.' | head -1)"
+# --- IP LAN buat murid (utamakan 192.168.*, lalu 10.*, terakhir 172.*=sering adapter WSL) ---
+ALLIP="$(cmd.exe /c 'ipconfig' 2>/dev/null | tr -d '\r' | awk '/IPv4/{print $NF}' | grep -E '^(192\.168|10\.|172\.)')"
+LANIP="$(echo "$ALLIP" | grep -E '^192\.168\.' | head -1)"
+[ -z "$LANIP" ] && LANIP="$(echo "$ALLIP" | grep -E '^10\.' | head -1)"
+[ -z "$LANIP" ] && LANIP="$(echo "$ALLIP" | grep -E '^172\.' | head -1)"
 [ -z "$LANIP" ] && LANIP="IP-GURU"
 
 echo ""
@@ -412,6 +415,9 @@ echo "  TORANG_OFFICE_URL=http://$LANIP:$PORT TORANG_JOIN_KEY=$JOIN_KEY \\"
 echo "  bash <(curl -fsSL $BASE_URL/install.sh)"
 echo "  -----------------------------------------------------------------"
 echo ""
+say "IP terdeteksi : $LANIP"
+[ -n "$ALLIP" ] && say "Semua IP PC ini: $(echo $ALLIP | tr '\n' ' ')  <- kalau murid tak konek, coba IP lain ini"
+say "Lihat perintah murid + IP terkini kapan saja : bash $GDIR/torang-key.sh"
 say "Ganti key kelas kapan saja : bash $GDIR/torang-key.sh <key-baru>"
 say "Log office/monitor         : $GDIR/office.log  |  $GDIR/monitor.log"
 say "Stop / Start               : $GDIR/stop.sh  |  $GDIR/start.sh"
