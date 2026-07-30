@@ -220,6 +220,10 @@ TORANG_PORT=$PORT
 TORANG_JOIN_KEY=$JOIN_KEY
 TORANG_MAXCONC=$MAXCONC
 TORANG_PYBIN=$PYBIN
+# Ruang aktivitas ditahan 2 menit. Default 25 dtk lebih pendek daripada waktu
+# karakter berjalan antar-ruang di mesin lambat, jadi sinyal ruang kedaluwarsa
+# di tengah jalan dan karakter berbalik arah tepat di depan pintu.
+TORANG_ACTIVITY_LINGER_MS=120000
 EOF
 
 # --- start.sh: nyalakan office + monitor guru (auto-restart) -------------
@@ -230,6 +234,19 @@ set -a; . "$HOME/.torang-guru/config.env"; set +a
 G="$HOME/.torang-guru"
 PORT="${TORANG_PORT:-19000}"
 PYBIN="${TORANG_PYBIN:-python3}"
+
+# [TORANG] KUNCI TUNGGAL — satu loop start.sh per path, titik.
+# Pemeriksaan pgrep di bawah masih menyisakan lomba: tiap loop me-restart node
+# setiap 5 detik, dan kalau dua terminal WSL dibuka tepat di dalam celah itu,
+# keduanya melihat "monitor tidak jalan" lalu sama-sama menyalakan loop baru.
+# Terbukti di lapangan: enam loop start.sh berjalan bersamaan, masing-masing
+# membangunkan Node tiap 5 detik di mesin yang sudah lambat. flock menutup celah
+# itu sepenuhnya; fd 9 tetap dipegang oleh subshell loop selama mereka hidup.
+LOCKFILE="$G/start.lock"
+exec 9>"$LOCKFILE" 2>/dev/null || true
+if command -v flock >/dev/null 2>&1; then
+  flock -n 9 || { echo "[start] loop lain sudah memegang kunci — keluar."; exit 0; }
+fi
 
 # kalau monitor guru sudah jalan -> anggap sudah nyala, keluar (hindari dobel)
 if pgrep -f "$G/monitor-client.js" >/dev/null 2>&1; then
@@ -290,7 +307,11 @@ else
 fi
 
 # --- auto-start tiap buka WSL (idempoten) --------------------------------
-HOOK='pgrep -f "$HOME/.torang-guru/monitor-client.js" >/dev/null 2>&1 || (nohup "$HOME/.torang-guru/start.sh" >>"$HOME/.torang-guru/boot.log" 2>&1 &)'
+# Penjaga memeriksa LOOP-nya (start.sh), bukan proses Node-nya. Memeriksa
+# monitor-client.js salah sasaran: node mati sesaat tiap kali loop me-restart,
+# jadi terminal yang dibuka di celah itu menyalakan loop tambahan. Kunci flock
+# di start.sh tetap jadi penjaga terakhir.
+HOOK='pgrep -f "$HOME/.torang-guru/start.sh" >/dev/null 2>&1 || (nohup "$HOME/.torang-guru/start.sh" >>"$HOME/.torang-guru/boot.log" 2>&1 &)'
 if ! grep -q "torang-guru/start.sh" "$HOME/.bashrc" 2>/dev/null; then
   { echo ""; echo "# Torang office+monitor guru (auto-start saat buka WSL)"; echo "$HOOK"; } >> "$HOME/.bashrc"
 fi

@@ -1,6 +1,30 @@
 #!/usr/bin/env node
 /**
- * Torang Class Monitor — guest client (v3.9 · main SIBUK tak pernah balik Ruang Tamu)
+ * Torang Class Monitor — guest client (v4.0 · agent baru LAHIR di Ruang Tamu)
+ * ================================================================
+ * BARU v4.0 (agent yang baru pertama kali terlihat LAHIR di Ruang Tamu):
+ *   • Dulu agent yang baru dikenali langsung "teleport" ke ruangannya — penonton tak
+ *     pernah melihat dia datang. Sekarang tiap id yang belum pernah terlihat muncul
+ *     dulu di RUANG TAMU dengan sapaan `halo, saya <nama>`, ditahan di situ selama
+ *     TORANG_NEWBORN_MS (default 20000), baru logika ruang v3.9 mengambil alih penuh.
+ *   • Daftar id yang pernah terlihat disimpan di `~/.torang-monitor/known-agents.json`
+ *     (satu folder dengan client_id) -> bertahan lintas restart dan lintas hari. Id
+ *     ditulis SEKETIKA saat lahir, jadi restart di tengah tak melahirkan ulang.
+ *     File hilang/rusak = daftar kosong; kegagalan file tak pernah menggagalkan telemetri.
+ *   • Baris log `[torang-monitor] LAHIR <id> "<nama>"` dicetak SELALU (bukan cuma DEBUG)
+ *     supaya kelahiran bisa diverifikasi lewat grep, bukan ditebak.
+ *   • Id yang SUDAH terdaftar: perilaku persis v3.9, tanpa perubahan. Pemaksaan ruang
+ *     hanya berlaku di dalam jendela kelahiran, dan hanya menyentuh `room`+`detail`
+ *     yang dikirim — TIDAK menyentuh hasWorked, busyAgents, maupun toolActivity.
+ *   • FIX singleton: pid hidup saja tak lagi dianggap "monitor sudah jalan". Nomor pid
+ *     dipakai ulang OS, jadi pid basi di daemon.pid bisa cocok dengan proses lain dan
+ *     bikin monitor keluar diam-diam tiap start (office kosong berjam-jam, lalu hidup
+ *     sendiri setelah `wsl --shutdown`). Sekarang /proc/<pid>/cmdline ikut dicocokkan.
+ *   • AGENT_ROOM tahan variasi penamaan: id dinormalkan (huruf kecil, buang - dan _),
+ *     dicocokkan persis, baru lewat kata kunci (design/web/etalase -> web ;
+ *     customer/support/layanan atau persis `cs` -> cs ; analy/analis/data -> data).
+ *     Jadi `designer`, `desainer_etalase`, `web_designer` sama-sama ke WEB, dan
+ *     `business-analyst` sama dengan `business_analyst`.
  * ================================================================
  * FIX v3.9 (bug "main bolak-balik web->tamu->data->tamu; tulis laporan malah ke Tamu"):
  *   • Sebab: satu-satunya sinyal ruang datang dari tool cari/olah (web_search/web_fetch/
@@ -181,6 +205,7 @@ const CONFIG = {
   WORK_LINGER_MS: Number(process.env.TORANG_WORK_LINGER_MS || FILECFG.workLingerMs || 25000), // v3.3: sekali kerja, tahan di ruangnya N ms walau deteksi sela kosong (kerja OpenClaw berdenyut)
   POLL_ACTIVITY: process.env.TORANG_POLL_ACTIVITY !== '0' && FILECFG.pollActivity !== false, // v3.8: baca `openclaw audit` -> ruang dari aktivitas tool (Cara A)
   ACTIVITY_LINGER_MS: Number(process.env.TORANG_ACTIVITY_LINGER_MS || FILECFG.activityLingerMs || 25000), // tahan di ruang aktivitas N ms setelah tool terakhir
+  NEWBORN_MS: Number(process.env.TORANG_NEWBORN_MS || FILECFG.newbornMs || 20000), // v4.0: lama agent baru ditahan di Ruang Tamu sebelum logika ruang v3.9 mengambil alih
 };
 const base = () => CONFIG.OFFICE_URL.replace(/\/+$/, '');
 function dbg(m, x) { if (CONFIG.DEBUG) console.log(`[torang-monitor] ${m}` + (x ? ' ' + safe(x) : '')); }
@@ -188,9 +213,25 @@ function safe(o) { try { return JSON.stringify(o); } catch (_) { return String(o
 
 /* 1) SINGLETON -------------------------------------------------------------- */
 function isAlive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }
+// [TORANG] v4.0 — pid HIDUP saja tidak cukup. Nomor pid dipakai ulang OS: setelah
+// reboot/wsl --shutdown, pid basi di daemon.pid bisa kebetulan dipakai proses lain
+// yang sama sekali bukan monitor, dan monitor lama SELALU keluar diam-diam saat start
+// (gejala nyata: office kosong berjam-jam, lalu hidup sendiri setelah wsl --shutdown
+// mengosongkan tabel proses). Jadi cocokkan juga NAMA prosesnya lewat /proc.
+// Kalau cmdline tak bisa dibaca (bukan Linux / proses milik user lain), jangan
+// menebak: perlakukan sebagai monitor beneran supaya tidak pernah dobel-jalan.
+function isMonitorProcess(pid) {
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    return raw.replace(/\0/g, ' ').includes('monitor-client.js');
+  } catch (_) { return true; }
+}
 function acquireSingleton() {
   try { const prev = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
-    if (isAlive(prev) && prev !== process.pid) { console.log(`[torang-monitor] sudah jalan (pid ${prev}) — keluar.`); return false; }
+    if (isAlive(prev) && prev !== process.pid) {
+      if (isMonitorProcess(prev)) { console.log(`[torang-monitor] sudah jalan (pid ${prev}) — keluar.`); return false; }
+      console.log(`[torang-monitor] pid ${prev} basi (proses lain, bukan monitor) — diambil alih.`);
+    }
   } catch (_) {}
   try { fs.writeFileSync(PID_FILE, String(process.pid), { mode: 0o600 }); } catch (_) {}
   return true;
@@ -208,6 +249,52 @@ function getClientId() {
   }
 }
 const CLIENT_ID = getClientId();
+
+/* 2b) [TORANG] v4.0 — AGENT BARU LAHIR DI RUANG TAMU ------------------------
+ * Daftar id yang pernah terlihat, satu folder dengan client_id supaya bertahan
+ * lintas restart & lintas hari. Aturan mainnya:
+ *   - id belum terdaftar  -> LAHIR: ruang dipaksa 'tamu' + sapaan, selama NEWBORN_MS.
+ *   - id sudah terdaftar  -> tak disentuh sama sekali (perilaku v3.9 murni).
+ * File ini murni kosmetik: kalau hilang/rusak/tak bisa ditulis, monitor tetap jalan. */
+const KNOWN_AGENTS_FILE = path.join(CONFIG_DIR, 'known-agents.json');
+const newbornAt = new Map();   // id -> waktu lahir (memori saja; daftar id-nya yang persisten)
+
+function loadKnownAgents() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(KNOWN_AGENTS_FILE, 'utf8'));
+    return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === 'string' && x) : []);
+  } catch (_) { return new Set(); }   // hilang / rusak / bukan array -> anggap kosong
+}
+const knownAgents = loadKnownAgents();
+
+function saveKnownAgents() {
+  try {
+    const tmp = KNOWN_AGENTS_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify([...knownAgents]));
+    fs.renameSync(tmp, KNOWN_AGENTS_FILE);
+  } catch (e) { dbg('known-agents gagal disimpan', { err: e.message }); }  // JANGAN pernah gagalkan telemetri
+}
+
+// Dipanggil tiap roster agent disegarkan. Id baru -> catat waktu lahir, tulis ke
+// daftar SEKETIKA (restart di tengah tak boleh melahirkan ulang), lalu cetak log.
+function markNewborns(list) {
+  const now = nowMs();
+  for (const a of list) {
+    if (!a || !a.id || knownAgents.has(a.id)) continue;
+    newbornAt.set(a.id, now);
+    knownAgents.add(a.id);
+    saveKnownAgents();
+    console.log(`[torang-monitor] LAHIR ${a.id} "${a.name}"`);
+  }
+}
+
+// null = bukan bayi (atau jendela lahirnya sudah lewat) -> pakai logika v3.9 apa adanya.
+function newbornPush(id, name) {
+  const t = newbornAt.get(id);
+  if (!t) return null;
+  if (nowMs() - t >= CONFIG.NEWBORN_MS) { newbornAt.delete(id); return null; }
+  return { room: 'tamu', detail: `halo, saya ${name}` };
+}
 
 /* --- CLI OpenClaw ASINKRON (tak memblok loop) --- */
 function ocCliAsync(args) {
@@ -418,11 +505,29 @@ function activityRoom(id) {
 const AGENT_ROOM = Object.assign(
   { customer_service: 'cs', business_analyst: 'data', desainer_etalase: 'web', web_designer: 'web' },
   FILECFG.agentRoom || {});
-// ruang dari id agent; kalau tak terdaftar, coba tebak dari kata kunci id/nama (web/cs/analisis).
+// [TORANG] v4.0 — id agent BEDA-BEDA antar mesin: `designer`/`cs` di PC ini,
+// `desainer_etalase`/`customer_service` di diagnosa lama, `business-analyst`
+// (tanda hubung) di PC tes lain. Daripada menumpuk kunci baru terus-menerus,
+// id dinormalkan dulu (huruf kecil, buang - dan _), dicocokkan PERSIS, baru
+// dicocokkan lewat kata kunci.
+function normId(s) { return String(s || '').toLowerCase().replace(/[-_]/g, ''); }
+const AGENT_ROOM_NORM = {};
+for (const k of Object.keys(AGENT_ROOM)) AGENT_ROOM_NORM[normId(k)] = AGENT_ROOM[k];
+function agentRoomByKeyword(id) {
+  const k = normId(id);
+  if (!k) return null;
+  if (k === 'cs') return 'cs';                                     // token pendek: PERSIS saja,
+  if (/design|web|etalase/.test(k)) return 'web';                  // jangan sampai kena "docs"/"specs"
+  if (/customer|support|layanan/.test(k)) return 'cs';
+  if (/analy|analis|data/.test(k)) return 'data';
+  return null;
+}
+// ruang dari id agent; kalau tak terdaftar, tebak dari kata kunci id, lalu dari nama.
 // Agent di luar web/cs/data -> null (tinggal di Ruang Tamu/Standby, karena ruang kerja cuma 3).
 function agentRoom(id, name) {
   const k = String(id).toLowerCase();
-  return AGENT_ROOM[k] || workRoom(mapTaskName(k)) || (name ? workRoom(mapTaskName(String(name))) : null);
+  return AGENT_ROOM_NORM[normId(id)] || agentRoomByKeyword(id)
+      || workRoom(mapTaskName(k)) || (name ? workRoom(mapTaskName(String(name))) : null);
 }
 const DEFAULT_WORKERS = [
   { id: 'desainer_etalase', name: 'Desainer Etalase', room: 'web' },
@@ -438,7 +543,7 @@ async function refreshAgents() {
     const arr = parseCliJson(await ocCliAsync(['agents', 'list', '--json']));
     const mapped = (Array.isArray(arr) ? arr : []).filter((a) => a && a.id)
       .map((a) => ({ id: a.id, name: a.identityName || a.name || a.id, room: agentRoom(a.id, a.identityName || a.name), isMain: !!a.isDefault || a.id === 'main' }));
-    if (mapped.length) cachedAgents = mapped;  // jangan kosongkan roster kalau hasil transien kosong
+    if (mapped.length) { cachedAgents = mapped; markNewborns(mapped); }  // jangan kosongkan roster kalau hasil transien kosong
     dbg('agents', { total: cachedAgents.length, workers: cachedAgents.filter((a) => !a.isMain).length });
   } catch (e) { dbg('agents list gagal', { err: e.message }); }
   finally { agentsInFlight = false; }
@@ -501,9 +606,14 @@ async function tickWorkers(includeMain) {
     const inRoom = lingerBusy && !!roomActive;   // pindah ke ruang kerja hanya kalau punya ruang
     const hadWorked = (g0 && g0.hasWorked) || busyNow;
     // belum pernah kerja -> RUANG TAMU ; pernah & nganggur -> STANDBY ; kerja/menyelesaikan -> ruangnya.
-    const room = inRoom ? roomActive : (hadWorked ? 'standby' : 'tamu');
-    const detail = busyNow ? (roomActive ? `kerja: ${roomActive}` : 'bekerja')
+    const roomV39 = inRoom ? roomActive : (hadWorked ? 'standby' : 'tamu');
+    const detailV39 = busyNow ? (roomActive ? `kerja: ${roomActive}` : 'bekerja')
       : (lingerBusy ? 'menyelesaikan…' : (hadWorked ? 'menunggu tugas' : 'baru masuk'));
+    // [TORANG] v4.0 — di dalam jendela kelahiran, ruang & sapaan dipaksa; sisanya (state,
+    // hasWorked, lastBusyAt) tetap hasil hitungan v3.9.
+    const nb = newbornPush(w.id, w.name);
+    const room = nb ? nb.room : roomV39;
+    const detail = nb ? nb.detail : detailV39;
     const g = await pushGuest(desiredIds, now, key, label(w.name), room,
       lingerBusy ? (ROOM_STATE[roomActive] || 'executing') : 'idle', detail);
     if (busyNow) { g.hasWorked = true; g.lastBusyAt = now; }
@@ -529,11 +639,16 @@ async function tickWorkers(includeMain) {
     //   cari/olah (mis. `bash`: menyusun file / MENGIRIM laporan ke user) -> fase
     //   "sampaikan/hasilkan" -> RUANG CS. Ruang Tamu hanya utk yg BELUM pernah kerja &
     //   nganggur; sudah pernah kerja & nganggur -> Standby.
-    const room = lingerBusy ? (mroom || 'cs') : (hadWorked ? 'standby' : 'tamu');
-    const detail = busyNow ? (actRoom ? `kerja: ${actRoom}` : (teamRoom ? `mengawasi: ${teamRoom}` : 'menyusun & menyampaikan hasil'))
+    const roomV39 = lingerBusy ? (mroom || 'cs') : (hadWorked ? 'standby' : 'tamu');
+    const detailV39 = busyNow ? (actRoom ? `kerja: ${actRoom}` : (teamRoom ? `mengawasi: ${teamRoom}` : 'menyusun & menyampaikan hasil'))
       : (lingerBusy ? 'menyelesaikan…' : (hadWorked ? 'menunggu tugas' : 'menunggu perintah'));
+    // [TORANG] v4.0 — sama seperti worker: hanya ruang & sapaan yang dipaksa.
+    // state tetap dihitung dari roomV39 supaya aturan v3.9 tak bergeser.
+    const nb = newbornPush(m.id, m.name);
+    const room = nb ? nb.room : roomV39;
+    const detail = nb ? nb.detail : detailV39;
     const g = await pushGuest(desiredIds, now, key, label(m.name), room,
-      lingerBusy ? (ROOM_STATE[room] || 'executing') : 'idle', detail);
+      lingerBusy ? (ROOM_STATE[roomV39] || 'executing') : 'idle', detail);
     if (busyNow) { g.hasWorked = true; g.lastBusyAt = now; }
   }
 

@@ -26,9 +26,9 @@ mkdir -p "$DIR"
 # --- ambil file plugin: utamakan lokal (star-office-tools), kalau tak ada -> unduh ---
 SRC_LOCAL=""
 for c in \
-  "/mnt/d/projects/torangapp/star-office-tools/torang-events" \
-  "$(pwd)/torang-events" \
-  "$(dirname "$0")/torang-events" ; do
+  "$(dirname "$0")/torang-events" \
+  "/mnt/d/torang/torangapp/torangapp/star-office-tools/torang-events" \
+  "$(pwd)/torang-events" ; do
   [ -f "$c/index.ts" ] && { SRC_LOCAL="$c"; break; }
 done
 for f in package.json openclaw.plugin.json index.ts; do
