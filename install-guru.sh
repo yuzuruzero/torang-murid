@@ -14,7 +14,7 @@
 #    6) auto-start tiap buka WSL (.bashrc)
 #    7) JARINGAN LAN (portproxy+firewall) via PowerShell admin (muncul UAC -> klik Yes)
 #    8) scheduled task Windows: relink portproxy tiap 2 menit + nyalakan office saat PC login
-#    9) alat ganti-key (torang-key.sh) + CETAK perintah murid siap-tempel
+#    9) alat bantu guru: ganti-key, cek-jaringan, sapu-agent + CETAK perintah murid
 #
 #  Prasyarat di PC guru:
 #    - WSL + OpenClaw terpasang (ada `node`, `python3`, `git`)
@@ -202,16 +202,24 @@ else
 fi
 [ -s "$GDIR/monitor-client.js" ] || die "monitor-client.js kosong/gagal."
 
-# --- [BARU] alat ganti-key (torang-key.sh) ------------------------------
-KEY_LOCAL=""
-for c in \
-  "$(dirname "$OFFICE_DIR")/star-office-tools/torang-key.sh" \
-  "$OFFICE_DIR/../star-office-tools/torang-key.sh" ; do
-  [ -f "$c" ] && { KEY_LOCAL="$c"; break; }
+# --- alat bantu guru ----------------------------------------------------
+#   torang-key.sh          ganti key kelas
+#   torang-cek-jaringan.sh cek jalur murid sebelum kelas (office -> iphlpsvc ->
+#                          portproxy -> alamat LAN). Dibuat setelah kejadian
+#                          31 Jul 2026: office sehat tapi tak seorang pun bisa
+#                          masuk karena layanan IP Helper Windows berhenti.
+#   torang-sapu-agent.sh   hapus karakter basi dari PC murid yang dimatikan
+for SCR in torang-key.sh torang-cek-jaringan.sh torang-sapu-agent.sh; do
+  SCR_LOCAL=""
+  for c in \
+    "$(dirname "$OFFICE_DIR")/star-office-tools/$SCR" \
+    "$OFFICE_DIR/../star-office-tools/$SCR" ; do
+    [ -f "$c" ] && { SCR_LOCAL="$c"; break; }
+  done
+  if [ -n "$SCR_LOCAL" ]; then cp "$SCR_LOCAL" "$GDIR/$SCR"
+  else curl -fsSL "$BASE_URL/$SCR" -o "$GDIR/$SCR" 2>/dev/null || true; fi
+  [ -s "$GDIR/$SCR" ] && chmod +x "$GDIR/$SCR" || rm -f "$GDIR/$SCR"
 done
-if [ -n "$KEY_LOCAL" ]; then cp "$KEY_LOCAL" "$GDIR/torang-key.sh"
-else curl -fsSL "$BASE_URL/torang-key.sh" -o "$GDIR/torang-key.sh" 2>/dev/null || true; fi
-[ -f "$GDIR/torang-key.sh" ] && chmod +x "$GDIR/torang-key.sh"
 
 # --- config.env ----------------------------------------------------------
 cat > "$GDIR/config.env" <<EOF
@@ -344,6 +352,19 @@ function Get-WslIp {
   return $null
 }
 
+# 0) IP Helper WAJIB hidup. Aturan portproxy cuma catatan di registry; yang
+#    benar-benar MEMBUKA port di sisi Windows adalah layanan iphlpsvc. Kalau ia
+#    mati, `portproxy show all` tetap tampil rapi seolah beres padahal tak ada
+#    yang mendengarkan — office sehat tapi tak satu pun murid bisa masuk.
+try {
+  $svc = Get-Service iphlpsvc -ErrorAction Stop
+  if ($svc.StartType -ne 'Automatic') { Set-Service iphlpsvc -StartupType Automatic -ErrorAction SilentlyContinue }
+  if ($svc.Status -ne 'Running') { Start-Service iphlpsvc -ErrorAction Stop; Start-Sleep -Seconds 3 }
+  Write-Host "[net] layanan IP Helper (iphlpsvc): hidup"
+} catch {
+  Write-Host "[net] PERINGATAN: iphlpsvc tak bisa dinyalakan -> portproxy tak akan berfungsi."
+}
+
 # 1) portproxy SEKARANG
 $wslip = Get-WslIp
 if ($wslip) {
@@ -361,15 +382,62 @@ Write-Host "[net] firewall izinkan TCP $port"
 
 # 3) skrip relink (dipakai scheduled task tiap 2 menit)
 $relink = Join-Path $dir "relink.ps1"
-@"
-`$port = $port
-`$o = (wsl.exe hostname -I) 2>`$null
-if (`$o) {
-  `$ip = ((`$o -join ' ').Trim() -split '\s+')[0]
-  netsh interface portproxy delete v4tov4 listenport=`$port listenaddress=0.0.0.0 2>`$null | Out-Null
-  netsh interface portproxy add    v4tov4 listenport=`$port listenaddress=0.0.0.0 connectport=`$port connectaddress=`$ip | Out-Null
+# Ditulis sebagai here-string LITERAL (@'...'@) supaya tak perlu meng-escape $ dan
+# backtick satu per satu; nomor port disisipkan setelahnya lewat -replace.
+$relinkBody = @'
+# TORANG — jaga jalur Windows -> WSL untuk office. Dijalankan tiap 2 menit.
+# Memeriksa iphlpsvc lebih dulu: aturan portproxy cuma catatan di registry,
+# yang membuka port sesungguhnya adalah layanan itu. Kalau ia mati, portproxy
+# tetap terlihat benar padahal tak ada yang mendengarkan (kejadian 31 Jul 2026).
+# Portproxy hanya disambung ulang bila IP WSL berubah atau port tak terdengar,
+# supaya tidak ada jendela putus tiap 2 menit.
+$port = __PORT__
+$log  = "C:\ProgramData\Torang\relink.log"
+function Catat($pesan) {
+  try {
+    "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $pesan" | Add-Content -Path $log -Encoding UTF8
+    $isi = @(Get-Content $log -ErrorAction SilentlyContinue)
+    if ($isi.Count -gt 500) { $isi[-300..-1] | Set-Content -Path $log -Encoding UTF8 }
+  } catch {}
 }
-"@ | Set-Content -Path $relink -Encoding ASCII
+try {
+  $svc = Get-Service iphlpsvc -ErrorAction Stop
+  if ($svc.StartType -ne 'Automatic') {
+    Set-Service iphlpsvc -StartupType Automatic -ErrorAction SilentlyContinue
+    Catat "iphlpsvc: StartupType diubah ke Automatic"
+  }
+  if ($svc.Status -ne 'Running') {
+    Catat "iphlpsvc BERHENTI -> dinyalakan"
+    Start-Service iphlpsvc -ErrorAction Stop
+    Start-Sleep -Seconds 3
+    $svc.Refresh()
+    if ($svc.Status -eq 'Running') { Catat "iphlpsvc: hidup lagi" } else { Catat "iphlpsvc: GAGAL dinyalakan" }
+  }
+} catch { Catat "iphlpsvc: gagal diperiksa -> $($_.Exception.Message)" }
+$o = (wsl.exe hostname -I) 2>$null
+if (-not $o) { Catat "IP WSL tak terbaca (WSL mati?) -> lewati"; exit 0 }
+$ip = (($o -join ' ').Trim() -split '\s+')[0]
+if (-not $ip) { Catat "IP WSL kosong -> lewati"; exit 0 }
+$tujuan = $null
+try {
+  $baris = (netsh interface portproxy show all) -join [Environment]::NewLine
+  $m = [regex]::Match($baris, "0\.0\.0\.0\s+$port\s+(\d+\.\d+\.\d+\.\d+)\s+$port")
+  if ($m.Success) { $tujuan = $m.Groups[1].Value }
+} catch {}
+$mendengar = $false
+try { $mendengar = [bool](Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue) } catch {}
+if ($tujuan -ne $ip -or -not $mendengar) {
+  if ($tujuan -ne $ip) { $alasan = "IP WSL berubah ($tujuan -> $ip)" } else { $alasan = "port $port tidak terdengar" }
+  Catat "Sambung ulang portproxy: $alasan"
+  netsh interface portproxy delete v4tov4 listenport=$port listenaddress=0.0.0.0 2>$null | Out-Null
+  netsh interface portproxy add    v4tov4 listenport=$port listenaddress=0.0.0.0 connectport=$port connectaddress=$ip | Out-Null
+  Start-Sleep -Seconds 2
+  $cek = [bool](Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+  if ($cek) { Catat "OK: port $port terdengar, tujuan $ip" } else { Catat "MASIH GAGAL: port $port tak terdengar" }
+}
+'@
+$relinkBody = $relinkBody -replace '__PORT__', $port
+$relinkBody | Set-Content -Path $relink -Encoding UTF8
 
 # 4) scheduled task: relink tiap 2 menit
 schtasks /Create /TN "TorangOfficeLAN" /F /RL HIGHEST /SC MINUTE /MO 2 `
@@ -443,7 +511,10 @@ else
   [ -n "$ALLIP" ] && say "Semua IP PC ini: $(echo $ALLIP | tr '\n' ' ')"
 fi
 say "Ganti key kelas kapan saja : bash $GDIR/torang-key.sh <key-baru>"
+say "CEK SEBELUM KELAS MULAI    : $GDIR/torang-cek-jaringan.sh"
+say "Hapus karakter basi        : $GDIR/torang-sapu-agent.sh --kering  (lihat dulu)"
 say "Log office/monitor         : $GDIR/office.log  |  $GDIR/monitor.log"
+say "Log jalur jaringan Windows : C:\\ProgramData\\Torang\\relink.log"
 say "Stop / Start               : $GDIR/stop.sh  |  $GDIR/start.sh"
 say "Auto-start                 : tiap buka WSL + (kalau dipasang) saat PC login."
 say "==============================================="
