@@ -236,16 +236,19 @@ PORT="${TORANG_PORT:-19000}"
 PYBIN="${TORANG_PYBIN:-python3}"
 
 # [TORANG] KUNCI TUNGGAL — satu loop start.sh per path, titik.
-# Pemeriksaan pgrep di bawah masih menyisakan lomba: tiap loop me-restart node
-# setiap 5 detik, dan kalau dua terminal WSL dibuka tepat di dalam celah itu,
-# keduanya melihat "monitor tidak jalan" lalu sama-sama menyalakan loop baru.
-# Terbukti di lapangan: enam loop start.sh berjalan bersamaan, masing-masing
-# membangunkan Node tiap 5 detik di mesin yang sudah lambat. flock menutup celah
-# itu sepenuhnya; fd 9 tetap dipegang oleh subshell loop selama mereka hidup.
+# Dipakai `flock -o` (--close): fd kunci DITUTUP sebelum perintah dijalankan,
+# jadi loop dan SELURUH anaknya (app.py, node, bahkan `sleep`) tidak ikut
+# memegang kunci. Yang memegang hanya proses flock, tepat selama loop hidup.
+# Tanpa -o kunci diwariskan, dan itu sudah menggigit dua kali:
+#   * membunuh loop sementara office masih hidup -> kunci tergenggam app.py,
+#     SEMUA loop baru ditolak selamanya padahal tak ada loop yang jalan;
+#   * `sleep 5` yatim menahan kunci beberapa detik setelah loop mati.
 LOCKFILE="$G/start.lock"
-exec 9>"$LOCKFILE" 2>/dev/null || true
-if command -v flock >/dev/null 2>&1; then
-  flock -n 9 || { echo "[start] loop lain sudah memegang kunci — keluar."; exit 0; }
+if command -v flock >/dev/null 2>&1 && [ -z "${TORANG_START_LOCKED:-}" ]; then
+  TORANG_START_LOCKED=1 flock -n -E 99 -o "$LOCKFILE" "$0" "$@"
+  rc=$?
+  [ "$rc" = "99" ] && { echo "[start] loop lain sudah memegang kunci — keluar."; exit 0; }
+  exit "$rc"
 fi
 
 # kalau monitor guru sudah jalan -> anggap sudah nyala, keluar (hindari dobel)

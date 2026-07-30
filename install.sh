@@ -155,9 +155,16 @@ set -a; . "$DIR/config.env"; set +a
 # Tanpa ini, tiap terminal WSL yang dibuka saat monitor sedang dalam jeda
 # restart 5 detik akan menyalakan loop tambahan. Di PC guru sempat terkumpul
 # enam loop sekaligus, masing-masing membangunkan Node tiap 5 detik.
-exec 9>"$DIR/start.lock" 2>/dev/null || true
-if command -v flock >/dev/null 2>&1; then
-  flock -n 9 || { echo "[Torang] loop lain sudah memegang kunci — keluar."; exit 0; }
+# Dipakai \`flock -o\` (--close): fd kunci ditutup sebelum perintah jalan, jadi
+# node maupun \`sleep\` TIDAK ikut memegang kunci. Kalau kunci diwariskan,
+# membunuh loop sementara anaknya masih hidup akan meninggalkan kunci
+# tergenggam dan loop baru ditolak padahal tak ada loop yang jalan.
+LOCKFILE="$DIR/start.lock"
+if command -v flock >/dev/null 2>&1 && [ -z "\${TORANG_START_LOCKED:-}" ]; then
+  TORANG_START_LOCKED=1 flock -n -E 99 -o "\$LOCKFILE" "\$0" "\$@"
+  rc=\$?
+  [ "\$rc" = "99" ] && { echo "[Torang] loop lain sudah memegang kunci — keluar."; exit 0; }
+  exit "\$rc"
 fi
 while true; do
   node "$DIR/monitor-client.js" || true
