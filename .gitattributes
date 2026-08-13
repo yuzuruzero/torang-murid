@@ -1,0 +1,6 @@
+# Skrip Linux WAJIB LF -- CRLF bikin "bad interpreter: /usr/bin/env bash^M"
+*.sh  text eol=lf
+# Skrip Windows WAJIB CRLF -- cmd.exe bisa salah baca file ber-LF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.md  text

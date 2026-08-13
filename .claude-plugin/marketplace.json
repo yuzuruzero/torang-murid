@@ -1,0 +1,24 @@
+{
+  "name": "torang-murid",
+  "owner": {
+    "name": "Hadi (Tim Torang)",
+    "email": "aikernelbot@gmail.com"
+  },
+  "metadata": {
+    "description": "Perkakas kelas Theater of AI (Torang): plugin Claude untuk mengelola OpenClaw, Hermes, dan Torang Event di PC murid/guru.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "openclaw-cleanup",
+      "source": "./openclaw-cleanup",
+      "description": "Uninstall total, reset ke fresh install, dan verifikasi kebersihan OpenClaw + Hermes + Torang Event di Ubuntu/WSL. Dry-run + konfirmasi wajib, pagar keamanan path, sudo per izin.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Hadi (Tim Torang)"
+      },
+      "keywords": ["openclaw", "hermes", "torang", "uninstall", "reset", "cleanup", "ubuntu", "wsl"],
+      "category": "tools"
+    }
+  ]
+}
