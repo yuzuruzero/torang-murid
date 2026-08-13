@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  OPENCLAW-CLEANUP -- RESET KE FRESH INSTALL  v1.0
+#  OPENCLAW-CLEANUP -- RESET KE FRESH INSTALL  v1.1
 #
 #  Urutan kerja:
 #    1. BACKUP config & credential penting -> ~/openclaw-backup-<tanggal>/
@@ -32,7 +32,7 @@
 # =====================================================================
 set -uo pipefail
 
-VERSI="1.0"
+VERSI="1.1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 URL_OC="https://openclaw.ai/install.sh"
 URL_HM="https://hermes-agent.nousresearch.com/install.sh"
@@ -84,10 +84,11 @@ if [ "$KERING" = 0 ] && [ "$PAKSA" = 0 ]; then
   say ""
   say "Ini akan MENGHAPUS state/config OpenClaw & Hermes (setelah backup),"
   say "lalu memasang ulang versi terbaru."
-  printf 'Ketik  RESET  untuk lanjut: '
+  printf 'Lanjut reset? (y = lanjut, lainnya batal): '
   read -r JWB
-  JWB="${JWB//$'\r'/}"   # buang CR: tty aneh/paste Windows mengirim 'ya'+CR
-  [ "$JWB" = "RESET" ] || { say "Dibatalkan. Tidak ada yang diubah."; exit 1; }
+  JWB="${JWB//$'\r'/}"   # buang CR: tty aneh/paste Windows mengirim jawaban+CR
+  JWB="${JWB,,}"         # huruf kecil semua: y/Y/ya/YA sama saja
+  case "$JWB" in y|ya|yes) ;; *) say "Dibatalkan. Tidak ada yang diubah."; exit 1 ;; esac
 fi
 
 # =====================================================================

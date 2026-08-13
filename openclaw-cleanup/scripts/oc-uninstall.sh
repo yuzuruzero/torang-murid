@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  OPENCLAW-CLEANUP -- MESIN UNINSTALL  v1.0
+#  OPENCLAW-CLEANUP -- MESIN UNINSTALL  v1.1
 #  (turunan torang-bersih-kelas.sh v1.2 yang sudah teruji di kelas Torang)
 #
 #  Mencabut sampai bersih dari Ubuntu / WSL Ubuntu:
@@ -18,7 +18,7 @@
 #
 #  PAKAI:
 #    bash oc-uninstall.sh --dry-run   # LIHAT rencana dulu, tak menghapus apa pun
-#    bash oc-uninstall.sh             # interaktif (minta ketik BERSIHKAN)
+#    bash oc-uninstall.sh             # interaktif (konfirmasi y/ya)
 #    bash oc-uninstall.sh -y          # tanpa tanya -- HANYA setelah pengguna
 #                                     # memberi konfirmasi eksplisit di percakapan
 #
@@ -40,7 +40,7 @@ set -uo pipefail
 
 SELF_TAG="oc-uninstall"
 SELF_PAT='oc-uninstall|oc-verify|oc-reset|openclaw-cleanup|torang-bersih'
-VERSI="1.0"
+VERSI="1.1"
 
 usage() {
   sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -114,10 +114,11 @@ if [ "$KERING" = 0 ] && [ "$PAKSA" = 0 ]; then
   say ""
   say "Ini akan MENGHAPUS PERMANEN (sesuai pilihan): Torang Event, OpenClaw"
   say "(beserta seluruh workspace & sesi), dan Hermes dari HOME ini."
-  printf 'Ketik  BERSIHKAN  untuk lanjut: '
+  printf 'Lanjut hapus? (y = lanjut, lainnya batal): '
   read -r JWB
-  JWB="${JWB//$'\r'/}"   # buang CR: tty aneh/paste Windows mengirim 'ya'+CR
-  [ "$JWB" = "BERSIHKAN" ] || { say "Dibatalkan. Tidak ada yang diubah."; exit 1; }
+  JWB="${JWB//$'\r'/}"   # buang CR: tty aneh/paste Windows mengirim jawaban+CR
+  JWB="${JWB,,}"         # huruf kecil semua: y/Y/ya/YA sama saja
+  case "$JWB" in y|ya|yes) ;; *) say "Dibatalkan. Tidak ada yang diubah."; exit 1 ;; esac
 fi
 
 SISA=0   # penanda hasil verifikasi akhir
@@ -204,7 +205,7 @@ saring_rc() {
   [ "$n" -gt 0 ] || return 0
   if [ "$KERING" = 1 ]; then
     say "  [dry-run] buang $n baris $label dari $f"
-    grep -nE "$re" "$f" | sed 's/^/      /' | tee -a "$LOG" >/dev/null
+    grep -nE "$re" "$f" | sed 's/^/      /' | tee -a "$LOG"
     return 0
   fi
   [ -f "$f.torang-bak" ] || cp -p "$f" "$f.torang-bak" 2>/dev/null
@@ -391,7 +392,7 @@ fi
 UNIT_SIS="$(ls -1 /etc/systemd/system 2>/dev/null | grep -Ei "$KOMP_RE" || true)"
 if [ -n "$UNIT_SIS" ]; then
   say "  DITEMUKAN unit systemd tingkat SISTEM:"
-  printf '%s\n' "$UNIT_SIS" | sed 's/^/      /' | tee -a "$LOG" >/dev/null
+  printf '%s\n' "$UNIT_SIS" | sed 's/^/      /' | tee -a "$LOG"
   if [ "$PAKAI_SUDO" = 1 ] && [ "$KERING" = 0 ] && ada_perintah sudo; then
     for u in $UNIT_SIS; do
       say "  (sudo) stop+disable+hapus $u"
@@ -439,7 +440,7 @@ done
 if ada_perintah crontab; then
   if crontab -l 2>/dev/null | grep -qEi "$KOMP_RE"; then
     say "  PERINGATAN: ada baris crontab yang cocok ($KOMP_RE):"
-    crontab -l 2>/dev/null | grep -Ei "$KOMP_RE" | sed 's/^/      /' | tee -a "$LOG" >/dev/null
+    crontab -l 2>/dev/null | grep -Ei "$KOMP_RE" | sed 's/^/      /' | tee -a "$LOG"
     if [ "$KERING" = 0 ]; then
       crontab -l 2>/dev/null | grep -vEi "$KOMP_RE" | crontab - 2>>"$LOG" \
         && say "  baris crontab tsb dibuang" || { say "  GAGAL menyunting crontab"; SISA=1; }
@@ -462,7 +463,7 @@ fi
 # hook boot WSL
 if [ -f /etc/wsl.conf ] && grep -qEi "$KOMP_RE" /etc/wsl.conf 2>/dev/null; then
   say "  PERINGATAN: /etc/wsl.conf memuat baris terkait -- perlu disunting manual (root):"
-  grep -nEi "$KOMP_RE" /etc/wsl.conf | sed 's/^/      /' | tee -a "$LOG" >/dev/null
+  grep -nEi "$KOMP_RE" /etc/wsl.conf | sed 's/^/      /' | tee -a "$LOG"
   SISA=1
 fi
 
@@ -528,7 +529,7 @@ if [ "$SISAKAN_OC" = 1 ]; then
 else
   judul "TAHAP 4/7 -- cabut OpenClaw"
   say "  biner yang terlihat sekarang:"
-  { type -aP openclaw 2>/dev/null || echo "      (tidak ada)"; } | sed 's/^/      /' | tee -a "$LOG" >/dev/null
+  { type -aP openclaw 2>/dev/null || echo "      (tidak ada)"; } | sed 's/^/      /' | tee -a "$LOG"
 
   # 4a. Jalur RESMI dulu (docs.openclaw.ai/install/uninstall). Kalau berhasil,
   #     sapuan manual di bawah tinggal memungut sisa.
@@ -565,6 +566,44 @@ else
       fi
     fi
   done
+
+  # 4b2. Instalasi npm sisi WINDOWS -- terlihat dari WSL sebagai biner di
+  #      /mnt/<drive>/... (PATH Windows diwariskan ke WSL). npm di dalam WSL
+  #      TIDAK BISA mencabutnya dan sudo TIDAK membantu. Jalur benar: interop
+  #      cmd.exe (menjalankan npm WINDOWS asli), lalu sapu shim + modulnya.
+  WIN_BIN="$(type -aP openclaw 2>/dev/null | grep -E '^/mnt/[a-z]/' || true)"
+  if [ -n "$WIN_BIN" ]; then
+    say "  TERDETEKSI instalasi npm sisi WINDOWS:"
+    printf '%s\n' "$WIN_BIN" | sed 's/^/      /' | tee -a "$LOG"
+    CMDEXE=""
+    ada_perintah cmd.exe && CMDEXE="cmd.exe"
+    [ -z "$CMDEXE" ] && [ -x /mnt/c/Windows/System32/cmd.exe ] && CMDEXE="/mnt/c/Windows/System32/cmd.exe"
+    if [ -n "$CMDEXE" ]; then
+      if [ "$KERING" = 1 ]; then
+        say "  [dry-run] (npm Windows) $CMDEXE /c \"npm rm -g openclaw\""
+      else
+        say "  (npm Windows) npm rm -g openclaw ... (bisa sampai 1-2 menit)"
+        ( cd /mnt/c 2>/dev/null && timeout 240 "$CMDEXE" /c "npm rm -g openclaw" ) >>"$LOG" 2>&1 \
+          && say "  npm Windows selesai mencabut" \
+          || say "  (npm Windows gagal/lambat -- shim disapu langsung di bawah)"
+      fi
+    else
+      say "  cmd.exe tidak terjangkau dari sini -- shim disapu langsung"
+    fi
+    while IFS= read -r b; do
+      [ -n "$b" ] || continue
+      NPMDIR="$(dirname "$b")"
+      case "$NPMDIR" in
+        /mnt/[a-z]/*npm)
+          for t in "$NPMDIR/openclaw" "$NPMDIR/openclaw.cmd" "$NPMDIR/openclaw.ps1"; do
+            { [ -e "$t" ] || [ -L "$t" ]; } && buang "$t" luar
+          done
+          [ -d "$NPMDIR/node_modules/openclaw" ] && buang "$NPMDIR/node_modules/openclaw" luar
+          ;;
+        *) say "  LEWAT (bukan folder npm Windows yang dikenal): $b" ;;
+      esac
+    done < <(printf '%s\n' "$WIN_BIN")
+  fi
 
   # 4c. pipx / pip (kalau ada yang memasang lewat jalur Python)
   if ada_perintah pipx; then
@@ -828,6 +867,10 @@ fi
 [ -n "$TERSISA" ]        && { say "MASIH ADA folder/file     :$TERSISA"; SISA=1; }
 [ -n "$PROSES" ]         && { say "MASIH ADA proses hidup    :$PROSES"; SISA=1; }
 [ -n "$BINER" ]          && { say "MASIH ADA biner di PATH   :$BINER"; SISA=1; }
+if [ -n "$BINER" ] && printf '%s' "$BINER" | grep -q '/mnt/'; then
+  say "  -> biner di /mnt/* = instalasi sisi WINDOWS; sudo TIDAK membantu."
+  say "     Dari WSL: cmd.exe /c \"npm rm -g openclaw\"  atau di PowerShell Windows: npm rm -g openclaw"
+fi
 [ -n "$RC_SISA" ]        && { say "MASIH ADA auto-start di   :$RC_SISA"; SISA=1; }
 [ -n "$UNIT_SISA" ]      && { say "MASIH ADA unit systemd    : $UNIT_SISA"; SISA=1; }
 [ -n "$UNIT_FILE_SISA" ] && { say "MASIH ADA file unit user  : $UNIT_FILE_SISA"; SISA=1; }

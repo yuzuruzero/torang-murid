@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  OPENCLAW-CLEANUP -- VERIFIKASI KEBERSIHAN  v1.0
+#  OPENCLAW-CLEANUP -- VERIFIKASI KEBERSIHAN  v1.1
 #  (turunan torang-cek-siap-pasang.sh v1.0 yang sudah teruji di kelas)
 #
 #  Memeriksa apakah sistem BENAR-BENAR bersih dari OpenClaw, Hermes, dan
@@ -16,7 +16,7 @@
 # =====================================================================
 set -uo pipefail
 
-VERSI="1.0"
+VERSI="1.1"
 SELF_PAT='oc-uninstall|oc-verify|oc-reset|openclaw-cleanup|torang-bersih|cek-siap-pasang'
 OC_STATE="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 OC_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
@@ -158,7 +158,12 @@ for b in openclaw hermes; do
   BINER="$(type -aP "$b" 2>/dev/null | tr '\n' ' ')"
   if [ -n "$BINER" ]; then
     bad "biner $b masih di PATH: $BINER"
-    obat "hapus lalu buka ulang terminal (atau: hash -r)"
+    if printf '%s' "$BINER" | grep -q '/mnt/'; then
+      obat "path /mnt/* = instalasi sisi WINDOWS (npm Windows); sudo tidak membantu"
+      obat "dari WSL: cmd.exe /c \"npm rm -g $b\"   atau di PowerShell Windows: npm rm -g $b"
+    else
+      obat "hapus lalu buka ulang terminal (atau: hash -r)"
+    fi
   else
     ok "which $b : (kosong)"
   fi

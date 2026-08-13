@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  OPENCLAW-CLEANUP -- SEKALI JALAN  (oc-total.sh)  v1.0
+#  OPENCLAW-CLEANUP -- SEKALI JALAN  (oc-total.sh)  v1.1
 #
 #  SATU perintah, TANPA install Claude, TANPA clone:
 #
@@ -10,7 +10,7 @@
 #    [1/4] POTRET     : verifikasi read-only -- apa saja yang terpasang
 #                       (kalau sudah bersih, berhenti di sini)
 #    [2/4] RENCANA    : dry-run pencabutan -- daftar persis yang akan dihapus
-#    [3/4] KONFIRMASI : ketik BERSIHKAN, baru eksekusi (lewati dengan -y)
+#    [3/4] KONFIRMASI : jawab y/ya, baru eksekusi (lewati dengan -y)
 #    [4/4] BUKTI      : verifikasi ulang -- laporan bersih/tidak per item
 #
 #  PENTING: pakai bentuk  bash <(curl ...)  BUKAN  curl ... | bash
@@ -36,7 +36,7 @@
 # =====================================================================
 set -uo pipefail
 
-VERSI="1.0"
+VERSI="1.1"
 BASE_URL="${TORANG_BASE_URL:-https://raw.githubusercontent.com/yuzuruzero/torang-murid/main}"
 SUB="openclaw-cleanup/scripts"
 
@@ -140,10 +140,11 @@ if [ "$PAKSA" = 0 ]; then
   if [ ! -t 0 ]; then
     die "stdin bukan terminal (kemungkinan lewat 'curl | bash'). Pakai bentuk bash <(curl ...) atau tambahkan -y."
   fi
-  printf 'Rencana di atas akan DIEKSEKUSI. Ketik  BERSIHKAN  untuk lanjut: '
+  printf 'Eksekusi rencana di atas sekarang? (y = lanjut, lainnya batal): '
   read -r JWB
   JWB="${JWB//$'\r'/}"   # buang CR: tty aneh/paste Windows mengirim jawaban+CR
-  [ "$JWB" = "BERSIHKAN" ] || { echo "[oc-total] Dibatalkan. Tidak ada yang diubah."; exit 1; }
+  JWB="${JWB,,}"         # huruf kecil semua: y/Y/ya/YA sama saja
+  case "$JWB" in y|ya|yes) ;; *) echo "[oc-total] Dibatalkan. Tidak ada yang diubah."; exit 1 ;; esac
 fi
 bash "$SRC/oc-uninstall.sh" -y ${TERUS[@]+"${TERUS[@]}"}
 RC_CABUT=$?
