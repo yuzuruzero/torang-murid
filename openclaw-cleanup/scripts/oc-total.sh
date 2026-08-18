@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  OPENCLAW-CLEANUP -- SEKALI JALAN  (oc-total.sh)  v1.1
+#  OPENCLAW-CLEANUP -- SEKALI JALAN  (oc-total.sh)  v1.2
 #
 #  SATU perintah, TANPA install Claude, TANPA clone:
 #
@@ -36,7 +36,7 @@
 # =====================================================================
 set -uo pipefail
 
-VERSI="1.1"
+VERSI="1.2"
 BASE_URL="${TORANG_BASE_URL:-https://raw.githubusercontent.com/yuzuruzero/torang-murid/main}"
 SUB="openclaw-cleanup/scripts"
 

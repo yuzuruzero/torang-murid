@@ -13,7 +13,7 @@
       "name": "openclaw-cleanup",
       "source": "./openclaw-cleanup",
       "description": "Uninstall total, reset ke fresh install, dan verifikasi kebersihan OpenClaw + Hermes + Torang Event di Ubuntu/WSL. Dry-run + konfirmasi wajib, pagar keamanan path, sudo per izin.",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "author": {
         "name": "Hadi (Tim Torang)"
       },

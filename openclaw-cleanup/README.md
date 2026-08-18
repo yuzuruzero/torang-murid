@@ -42,7 +42,10 @@ Dari clone/plugin, `oc-total.sh` otomatis memakai skrip di sebelahnya
 - `oc-total.sh` -- SEKALI JALAN: verify -> dry-run -> konfirmasi -> cabut ->
   verify akhir; `--reset` mendelegasikan ke oc-reset.sh. Bisa berdiri sendiri
   lewat `bash <(curl ...)` (mengunduh pendukungnya ke folder sementara).
-- `oc-uninstall.sh` -- mesin cabut. Exit: `0` bersih, `2` masih ada sisa.
+- `oc-uninstall.sh` -- mesin cabut. Ikut menyapu agen lain kelas (Codex,
+  cua-driver, agent-browser) dan residu toolchain npm kelas (~/.npm,
+  ~/.npm-global, prefix .npmrc) -- lewati dengan --sisakan-agenlain /
+  --sisakan-oc / --sisakan-hm. Exit: `0` bersih, `2` masih ada sisa.
 - `oc-reset.sh` -- backup -> bersih -> install ulang. Backup gagal = tidak ada
   yang dihapus; pembersihan menyisakan jejak = install dibatalkan.
 - `oc-verify.sh` -- verifikasi read-only. Exit: `0` bersih, `2` tidak bersih.

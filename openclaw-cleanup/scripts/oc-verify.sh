@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  OPENCLAW-CLEANUP -- VERIFIKASI KEBERSIHAN  v1.1
+#  OPENCLAW-CLEANUP -- VERIFIKASI KEBERSIHAN  v1.2
 #  (turunan torang-cek-siap-pasang.sh v1.0 yang sudah teruji di kelas)
 #
 #  Memeriksa apakah sistem BENAR-BENAR bersih dari OpenClaw, Hermes, dan
@@ -16,7 +16,7 @@
 # =====================================================================
 set -uo pipefail
 
-VERSI="1.1"
+VERSI="1.2"
 SELF_PAT='oc-uninstall|oc-verify|oc-reset|openclaw-cleanup|torang-bersih|cek-siap-pasang'
 OC_STATE="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 OC_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
@@ -205,7 +205,10 @@ for d in "$OC_STATE" "$HOME/.openclaw" "$HOME/.config/openclaw" "$HOME/.cache/op
          "$HOME/.torang" "$HOME/.torang-plugin" "$HOME/.torang-monitor" \
          "$HOME/.torang-guru" "$HOME/torang-office" "$HOME/.torang-events.env" \
          "$HOME/torang-events.log" "$HOME/.torang-events.log" \
-         "$HOME/.config/torang" "$HOME/.cache/torang" "$HOME/.local/share/torang"; do
+         "$HOME/.torang-events-state.json" \
+         "$HOME/.config/torang" "$HOME/.cache/torang" "$HOME/.local/share/torang" \
+         "$HOME/.codex" "$HOME/.cua-driver" "$HOME/.agent-browser" \
+         "$HOME/.local/share/uv" "$HOME/.npm-global"; do
   [ -e "$d" ] || continue
   case " $KOTOR_D " in *" $d "*) continue ;; esac
   KOTOR_D="$KOTOR_D $d"
@@ -233,13 +236,28 @@ if [ -f "$HOME/.npmrc" ] && grep -qi 'hermes' "$HOME/.npmrc" 2>/dev/null; then
   bad "~/.npmrc masih mengarahkan prefix npm ke Hermes"
   obat "sunting/hapus baris prefix di ~/.npmrc"
 fi
-for t in node npm npx hermes uv; do
-  L="$HOME/.local/bin/$t"
-  if [ -L "$L" ] && [ ! -e "$L" ]; then
-    bad "symlink menggantung: $L (target sudah tiada)"
-    obat "rm $L  -- kalau dibiarkan, installer berikutnya gagal di tengah jalan"
-  fi
+HB=""
+for L in "$HOME/.local/bin"/hermes* "$HOME/.local/bin/cua-driver" "$HOME/.local/bin/agent-browser"; do
+  { [ -e "$L" ] || [ -L "$L" ]; } && HB="$HB $(basename "$L")"
 done
+if [ -n "$HB" ]; then
+  bad "biner agen tersisa di ~/.local/bin:$HB"
+  obat "jalankan /uninstall terbaru (oc-uninstall.sh) untuk menyapunya"
+fi
+if [ -d "$HOME/.local/bin" ]; then
+  for L in "$HOME/.local/bin"/*; do
+    if [ -L "$L" ] && [ ! -e "$L" ]; then
+      bad "symlink menggantung: $L (target sudah tiada)"
+      obat "rm $L  -- kalau dibiarkan, installer berikutnya gagal di tengah jalan"
+    fi
+  done
+fi
+for f in "$HOME/.bashrc.torang-bak" "$HOME/.profile.torang-bak" "$HOME/.npmrc.torang-bak"; do
+  [ -e "$f" ] && { bad "cadangan sisa versi lama: $f"; obat "jalankan /uninstall terbaru -- versi kini menyapu ini otomatis"; }
+done
+if [ -f "$HOME/.npmrc" ] && grep -q 'npm-global' "$HOME/.npmrc" 2>/dev/null; then
+  bad "~/.npmrc masih memuat prefix npm-global (residu toolchain kelas)"
+fi
 BK="$(ls -1d "$HOME"/openclaw-backup-* 2>/dev/null | tr '\n' ' ' || true)"
 [ -n "$BK" ] && warn "ada folder backup (bukan temuan kotor, hanya info): $BK"
 

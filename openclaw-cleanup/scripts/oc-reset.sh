@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  OPENCLAW-CLEANUP -- RESET KE FRESH INSTALL  v1.1
+#  OPENCLAW-CLEANUP -- RESET KE FRESH INSTALL  v1.2
 #
 #  Urutan kerja:
 #    1. BACKUP config & credential penting -> ~/openclaw-backup-<tanggal>/
@@ -15,7 +15,7 @@
 #
 #  PAKAI:
 #    bash oc-reset.sh --dry-run    # lihat rencana lengkap dulu
-#    bash oc-reset.sh              # interaktif (minta ketik RESET)
+#    bash oc-reset.sh              # interaktif (konfirmasi y/ya)
 #    bash oc-reset.sh -y           # tanpa tanya -- HANYA setelah pengguna
 #                                  # memberi konfirmasi eksplisit di percakapan
 #  PILIHAN:
@@ -32,7 +32,7 @@
 # =====================================================================
 set -uo pipefail
 
-VERSI="1.1"
+VERSI="1.2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 URL_OC="https://openclaw.ai/install.sh"
 URL_HM="https://hermes-agent.nousresearch.com/install.sh"

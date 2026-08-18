@@ -34,6 +34,8 @@ ada (`ls`) sebelum menjalankan; kalau tak ada, lihat bagian "Fallback".
    - simpan hasil kerja murid dulu -> `--arsip`
    - jangan cabut OpenClaw / Hermes / Torang -> `--sisakan-oc` / `--sisakan-hm`
      / `--sisakan-torang`
+   - jangan cabut agen lain kelas (Codex, cua-driver, agent-browser) ->
+     `--sisakan-agenlain`
    - buang baris PATH ~/.local/bin dari rc -> `--bersihkan-path`
 2. **Selalu dry-run dulu**, apa pun permintaannya:
    `bash <akar>/scripts/oc-uninstall.sh --dry-run [flag...]`

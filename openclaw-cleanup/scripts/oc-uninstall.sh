@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  OPENCLAW-CLEANUP -- MESIN UNINSTALL  v1.1
+#  OPENCLAW-CLEANUP -- MESIN UNINSTALL  v1.2
 #  (turunan torang-bersih-kelas.sh v1.2 yang sudah teruji di kelas Torang)
 #
 #  Mencabut sampai bersih dari Ubuntu / WSL Ubuntu:
@@ -31,6 +31,8 @@
 #    --sisakan-oc                JANGAN cabut OpenClaw
 #    --sisakan-hm                JANGAN cabut Hermes
 #    --sisakan-torang            JANGAN cabut Torang Event (dipakai /reset)
+#    --sisakan-agenlain          JANGAN cabut agen lain kelas (Codex, cua-driver,
+#                                agent-browser)
 #    --bersihkan-path            ikut buang baris PATH ~/.local/bin dari file rc
 #    --bantuan | -h              bantuan
 #
@@ -40,7 +42,7 @@ set -uo pipefail
 
 SELF_TAG="oc-uninstall"
 SELF_PAT='oc-uninstall|oc-verify|oc-reset|openclaw-cleanup|torang-bersih'
-VERSI="1.1"
+VERSI="1.2"
 
 usage() {
   sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -48,7 +50,8 @@ usage() {
 
 # ---------- pilihan ----------
 KERING=0; PAKSA=0; GURU=0; ARSIP=0
-SISAKAN_OC=0; SISAKAN_HM=0; SISAKAN_TORANG=0; BERSIHKAN_PATH=0; PAKAI_SUDO=0
+SISAKAN_OC=0; SISAKAN_HM=0; SISAKAN_TORANG=0; SISAKAN_AGENLAIN=0
+BERSIHKAN_PATH=0; PAKAI_SUDO=0
 
 for a in "$@"; do
   case "$a" in
@@ -59,6 +62,7 @@ for a in "$@"; do
     --sisakan-oc)           SISAKAN_OC=1 ;;
     --sisakan-hm)           SISAKAN_HM=1 ;;
     --sisakan-torang)       SISAKAN_TORANG=1 ;;
+    --sisakan-agenlain)     SISAKAN_AGENLAIN=1 ;;
     --bersihkan-path)       BERSIHKAN_PATH=1 ;;
     --sudo)                 PAKAI_SUDO=1 ;;
     --bantuan|-h|--help)    usage; exit 0 ;;
@@ -208,13 +212,15 @@ saring_rc() {
     grep -nE "$re" "$f" | sed 's/^/      /' | tee -a "$LOG"
     return 0
   fi
-  [ -f "$f.torang-bak" ] || cp -p "$f" "$f.torang-bak" 2>/dev/null
+  # KEBIJAKAN: penghapusan TANPA membuat backup apa pun -- rc disunting
+  # langsung, dan sisa .torang-bak dari versi lama ikut disapu.
   # PENTING: grep -v keluar dengan kode 1 kalau TIDAK ADA baris tersisa
   # (mis. seluruh isi file cocok). Itu sukses, bukan gagal -- kode <=1 = aman.
   grep -vE "$re" "$f" > "$f.tmp-torang" 2>/dev/null
   local rc=$?
   if [ "$rc" -le 1 ] && mv "$f.tmp-torang" "$f"; then
-    say "  buang $n baris $label dari $f  (cadangan: $f.torang-bak)"
+    say "  buang $n baris $label dari $f"
+    rm -f "$f.torang-bak" 2>/dev/null
   else
     rm -f "$f.tmp-torang"; say "  GAGAL menyunting $f (grep rc=$rc)"; SISA=1
   fi
@@ -334,6 +340,13 @@ if [ "$SISAKAN_TORANG" = 0 ]; then
     saring_rc "$f" "$RE_TORANG_RC" "auto-start Torang"
   done
 fi
+
+# Sapu TANPA SYARAT cadangan .torang-bak sisa versi lama (kebijakan: tanpa
+# backup). Dulu hanya tersapu saat file rc masih disunting -- celah: di PC
+# yang sudah pernah dibersihkan, bak basi tertinggal selamanya.
+for f in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.npmrc"; do
+  buang "$f.torang-bak"
+done
 
 # systemd milik user (di WSL sering tidak aktif -- ditangani dengan anggun)
 if ada_perintah systemctl && systemctl --user show >/dev/null 2>&1; then
@@ -503,6 +516,7 @@ else
   buang "$HOME/.torang-plugin"
   buang "$HOME/.torang-monitor"
   buang "$HOME/.torang-events.env"
+  buang "$HOME/.torang-events-state.json"
   buang "$HOME/torang-events.log"
   buang "$HOME/.torang-events.log"
   buang "$HOME/.config/torang"
@@ -680,6 +694,18 @@ else
   buang "$HOME/.local/share/hermes"
   buang "$HOME/.local/state/hermes"
 
+  # Biner/berkas BERAWALAN hermes di ~/.local/bin (installer Hermes baru
+  # menulis hermes-acp & hermes-agent sebagai FILE biasa, bukan symlink --
+  # nama berawalan hermes = milik Hermes, sapu semua).
+  for L in "$HOME/.local/bin"/hermes*; do
+    { [ -e "$L" ] || [ -L "$L" ]; } || continue
+    buang "$L"
+  done
+  # Toolchain uv (dipakai Hermes): python yang dipasang uv hidup di sini;
+  # symlink ~/.local/bin/python* yang menunjuk ke sana ikut mati dan disapu
+  # oleh sapuan tautan menggantung di Tahap 6.
+  buang "$HOME/.local/share/uv"
+
   # tautan yang dibuat Hermes di ~/.local/bin -- hapus HANYA kalau menunjuk ke
   # ~/.hermes atau sudah menggantung (target hilang). Node sistem/nvm aman.
   for t in hermes node npm npx uv; do
@@ -734,6 +760,27 @@ else
 fi
 
 # =====================================================================
+#  TAHAP 5b -- AGEN LAIN KELAS (Codex, cua-driver, agent-browser)
+#  Ikut terpasang di PC murid selama kelas; disapu supaya PC benar-benar
+#  kembali kosong. Lewati dengan --sisakan-agenlain.
+# =====================================================================
+if [ "$SISAKAN_AGENLAIN" = 1 ]; then
+  judul "TAHAP 5b/7 -- agen lain dilewati (--sisakan-agenlain)"
+else
+  judul "TAHAP 5b/7 -- cabut agen lain kelas (Codex, cua-driver, agent-browser)"
+  matikan_pola 'cua-driver'
+  matikan_pola 'agent-browser'
+  buang "$HOME/.codex"
+  buang "$HOME/.config/codex"
+  buang "$HOME/.cache/codex"
+  buang "$HOME/.cua-driver"
+  buang "$HOME/.agent-browser"
+  buang "$HOME/.cache/agent-browser"
+  buang "$HOME/.local/bin/cua-driver"
+  buang "$HOME/.local/bin/agent-browser"
+fi
+
+# =====================================================================
 #  TAHAP 6 -- DOCKER & CACHE
 # =====================================================================
 judul "TAHAP 6/7 -- docker & cache"
@@ -765,25 +812,44 @@ else
   say "  docker tidak terpasang -- dilewati"
 fi
 
-# cache npm & pip (bisa dibangun ulang; dibersihkan sesuai permintaan)
-if [ "$KERING" = 1 ]; then
-  ada_perintah npm && say "  [dry-run] npm cache clean --force"
-  [ -n "$PIP_BIN" ] && say "  [dry-run] $PIP_BIN cache purge"
-  [ -d "$HOME/.npm/_cacache" ] && say "  [dry-run] hapus $HOME/.npm/_cacache (fallback)"
-  [ -d "$HOME/.cache/pip" ] && say "  [dry-run] hapus $HOME/.cache/pip (fallback)"
+# Residu toolchain npm KELAS: cache ~/.npm, prefix global ~/.npm-global,
+# dan baris prefix di ~/.npmrc. Hanya bila OpenClaw DAN Hermes sama-sama
+# dicabut (kalau salah satu disisakan, npm-global bisa masih dipakai).
+if [ "$SISAKAN_OC" = 0 ] && [ "$SISAKAN_HM" = 0 ]; then
+  buang "$HOME/.npm"
+  buang "$HOME/.npm-global"
+  if [ -f "$HOME/.npmrc" ] && grep -q 'npm-global' "$HOME/.npmrc" 2>/dev/null; then
+    saring_rc "$HOME/.npmrc" 'npm-global' "prefix npm-global"
+  fi
+  # .npmrc yang jadi kosong setelah disaring tidak berguna -- buang sekalian
+  [ "$KERING" = 0 ] && [ -f "$HOME/.npmrc" ] && [ ! -s "$HOME/.npmrc" ] && buang "$HOME/.npmrc"
 else
-  if ada_perintah npm; then
+  if ada_perintah npm && [ "$KERING" = 0 ]; then
     say "  npm cache clean --force"
     timeout 120 npm cache clean --force >>"$LOG" 2>&1 || buang "$HOME/.npm/_cacache"
-  else
-    buang "$HOME/.npm/_cacache"
   fi
+fi
+
+# cache pip (bisa dibangun ulang)
+if [ "$KERING" = 1 ]; then
+  [ -n "$PIP_BIN" ] && say "  [dry-run] $PIP_BIN cache purge"
+  [ -d "$HOME/.cache/pip" ] && say "  [dry-run] hapus $HOME/.cache/pip (fallback)"
+else
   if [ -n "$PIP_BIN" ]; then
     say "  $PIP_BIN cache purge"
     timeout 120 "$PIP_BIN" cache purge >>"$LOG" 2>&1 || buang "$HOME/.cache/pip"
   else
     buang "$HOME/.cache/pip"
   fi
+fi
+
+# Symlink MENGGANTUNG di ~/.local/bin -- target sudah dihapus tahap-tahap
+# sebelumnya (mis. python3.11 -> ~/.local/share/uv/...). Broken link tidak
+# berguna dan membuat installer berikutnya gagal di tengah jalan.
+if [ -d "$HOME/.local/bin" ]; then
+  for L in "$HOME/.local/bin"/*; do
+    [ -L "$L" ] && [ ! -e "$L" ] && { say "  tautan menggantung: $(basename "$L")"; buang "$L"; }
+  done
 fi
 
 # log di /var/log (biasanya butuh root)
@@ -805,13 +871,20 @@ done
 judul "TAHAP 7/7 -- verifikasi"
 
 CEK_PATH=""
-[ "$SISAKAN_TORANG" = 0 ] && CEK_PATH="$CEK_PATH $HOME/.torang $HOME/.torang-plugin $HOME/.torang-monitor $HOME/torang-events.log"
-[ "$SISAKAN_OC" = 0 ] && CEK_PATH="$CEK_PATH $OC_STATE $HOME/.config/openclaw $HOME/.cache/openclaw"
-[ "$SISAKAN_HM" = 0 ] && CEK_PATH="$CEK_PATH $HOME/.hermes $HOME/.config/hermes $HOME/.cache/hermes"
-[ "$GURU" = 1 ]       && CEK_PATH="$CEK_PATH $HOME/.torang-guru $HOME/torang-office"
+[ "$SISAKAN_TORANG" = 0 ]   && CEK_PATH="$CEK_PATH $HOME/.torang $HOME/.torang-plugin $HOME/.torang-monitor $HOME/torang-events.log $HOME/.torang-events-state.json"
+[ "$SISAKAN_OC" = 0 ]       && CEK_PATH="$CEK_PATH $OC_STATE $HOME/.config/openclaw $HOME/.cache/openclaw"
+[ "$SISAKAN_HM" = 0 ]       && CEK_PATH="$CEK_PATH $HOME/.hermes $HOME/.config/hermes $HOME/.cache/hermes $HOME/.local/share/uv"
+[ "$SISAKAN_AGENLAIN" = 0 ] && CEK_PATH="$CEK_PATH $HOME/.codex $HOME/.cua-driver $HOME/.agent-browser"
+[ "$GURU" = 1 ]             && CEK_PATH="$CEK_PATH $HOME/.torang-guru $HOME/torang-office"
+[ "$SISAKAN_OC" = 0 ] && [ "$SISAKAN_HM" = 0 ] && CEK_PATH="$CEK_PATH $HOME/.npm-global"
 
 TERSISA=""
 for p in $CEK_PATH; do [ -e "$p" ] && TERSISA="$TERSISA $p"; done
+if [ "$SISAKAN_HM" = 0 ]; then
+  for L in "$HOME/.local/bin"/hermes*; do
+    { [ -e "$L" ] || [ -L "$L" ]; } && TERSISA="$TERSISA $L"
+  done
+fi
 
 PROSES=""
 POLA_CEK=""
