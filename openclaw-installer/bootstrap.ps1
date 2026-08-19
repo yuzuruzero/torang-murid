@@ -43,6 +43,26 @@ $LogFile = Join-Path $Rumah 'log-unduh.txt'
 # keduanya sebagai tetangga di folder yang sama.
 $Berkas = @('PASANG.bat', 'pasang.ps1', 'pasang-inti.sh', 'verifikasi.sh')
 
+# raw.githubusercontent menyajikan berkas persis seperti tersimpan di repo,
+# dan repo menyimpan SEMUA berkas teks dengan akhir baris LF. Untuk .bat itu
+# salah: cmd.exe bisa salah membaca berkas .bat ber-LF. Jadi setelah diunduh,
+# .bat dan .ps1 dikembalikan ke CRLF di disk.
+#
+# Jalur ZIP tidak kena masalah ini -- tombol Download ZIP memakai git archive
+# yang memulihkan CRLF sesuai .gitattributes. Yang perlu diperbaiki hanya
+# jalur unduh satu-baris ini.
+#
+# Berkas .sh JANGAN disentuh: itu dijalankan di dalam WSL dan CRLF di sana
+# menghasilkan "bad interpreter: /usr/bin/env bash^M".
+function Jadikan-CRLF($path) {
+  try {
+    $isi = [System.IO.File]::ReadAllText($path)
+    $isi = ($isi -replace "`r`n", "`n") -replace "`n", "`r`n"
+    [System.IO.File]::WriteAllText($path, $isi)
+    return $true
+  } catch { return $false }
+}
+
 function Catat($teks) {
   $baris = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $teks
   try { Add-Content -Path $LogFile -Value $baris -Encoding UTF8 } catch { }
@@ -132,6 +152,16 @@ if ($semuaAda -and -not $paksa) {
     exit 1
   }
   Ok "semua berkas pemasang siap"
+}
+
+# Kembalikan akhir baris .bat dan .ps1 ke CRLF. Dijalankan SELALU, juga saat
+# unduhan dilewati -- aman diulang, hasilnya sama.
+foreach ($b in @('PASANG.bat', 'pasang.ps1')) {
+  $p = Join-Path $Rumah $b
+  if (Test-Path $p) {
+    if (Jadikan-CRLF $p) { Catat "eol $b -> CRLF" }
+    else { Warn "tidak bisa merapikan akhir baris $b (biasanya tidak fatal)" }
+  }
 }
 
 # Penanda: dipakai pasang.ps1 untuk tahu bahwa pengguna datang lewat
