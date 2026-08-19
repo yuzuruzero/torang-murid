@@ -1,0 +1,17 @@
+# Berkas yang lahir saat installer DIJALANKAN -- jangan pernah ikut commit.
+# Isinya jejak mesin tertentu (nama akun Windows, nama komputer, jalur lokal)
+# dan tidak berguna bagi orang lain.
+
+log-pasang.txt
+log-unduh.txt
+state.json
+state.json.baru
+via-bootstrap.txt
+
+# Log uji yang disimpan manual untuk perbandingan -- tetap di luar repo.
+log-uji/
+
+# Cadangan apa pun.
+*.backup
+*.backup-*
+*.bak
